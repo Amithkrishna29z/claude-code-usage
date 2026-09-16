@@ -1,15 +1,12 @@
-## .NET build output
-bin/
-obj/
-publish/
-*.user
-
-## Rider / VS
-.vs/
-.idea/
-
 ## Rust build output
 target/
+
+## Leftover .NET publish output from the pre-Rust implementation
+publish/
+
+## IDEs
+.idea/
+.vs/
 
 ## Desktop screenshots (contain personal/third-party content)
 screenshot-*.png
