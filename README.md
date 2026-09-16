@@ -34,21 +34,121 @@ local Claude Code session logs.
 
 ---
 
-## Build and run
+## Install
+
+Prebuilt binaries for all three platforms are attached to every release:
+
+- **[Latest release](https://github.com/Amithkrishna29z/claude-code-usage/releases/latest)** — a fixed, tagged build.
+- **[`latest` prerelease](https://github.com/Amithkrishna29z/claude-code-usage/releases/tag/latest)** — rebuilt on every push to `main`, so its contents change over time.
+
+| Platform | Asset |
+|---|---|
+| Windows 10/11 (x64) | `claude-usage-windows-x86_64.exe` |
+| macOS (Apple silicon) | `claude-usage-macos-aarch64` |
+| macOS (Intel) | `claude-usage-macos-x86_64` |
+| Linux (x86-64, glibc) | `claude-usage-linux-x86_64` |
+
+There is no installer and no main window: the download *is* the app, and it puts an
+icon in the tray/menu bar. Put it wherever you keep local binaries and run it.
+
+It also needs **Claude Code installed and signed in on the same machine** — that is
+where both the OAuth token and the session logs come from. Without `~/.claude`, the
+widget has nothing to read.
+
+The binaries are **unsigned**, so each OS pushes back the first time in its own way;
+the steps below are how you get past that.
+
+### Windows
+
+```powershell
+# from wherever you saved it
+.\claude-usage-windows-x86_64.exe
+```
+
+SmartScreen will show "Windows protected your PC" — choose **More info → Run anyway**.
+(Or clear the download flag first: `Unblock-File .\claude-usage-windows-x86_64.exe`.)
+
+The tray icon usually starts hidden under the **"^"** overflow arrow; drag it onto the
+taskbar to keep it visible. Left-click it to show the widget.
+
+To start it with Windows, press `Win+R`, run `shell:startup`, and drop a shortcut to
+the exe in the folder that opens.
+
+### macOS
+
+```bash
+# Apple silicon; swap in the x86_64 asset on an Intel Mac
+chmod +x claude-usage-macos-aarch64
+xattr -d com.apple.quarantine claude-usage-macos-aarch64
+./claude-usage-macos-aarch64
+```
+
+Without the `xattr` step, Gatekeeper refuses to open it ("cannot be opened because the
+developer cannot be verified"). If you skip it and get blocked anyway, **System
+Settings → Privacy & Security → Open Anyway** allows that one binary.
+
+The icon appears in the **menu bar**, top-right. Left-click toggles the widget.
+
+To keep it around, move it somewhere stable (`/usr/local/bin`, say). It is a plain
+binary rather than an `.app` bundle, so for login startup the reliable route is a
+LaunchAgent — a `~/Library/LaunchAgents/com.local.claude-usage.plist` with
+`ProgramArguments` pointing at the binary and `RunAtLoad` set, loaded with
+`launchctl load`.
+
+### Linux
+
+The binary is dynamically linked against GTK and the appindicator tray, so install the
+runtime libraries first:
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install -y libgtk-3-0 libayatana-appindicator3-1 libxdo3
+
+# Fedora
+sudo dnf install gtk3 libappindicator-gtk3 xdotool
+
+# Arch
+sudo pacman -S gtk3 libayatana-appindicator xdotool
+```
+
+```bash
+chmod +x claude-usage-linux-x86_64
+./claude-usage-linux-x86_64
+```
+
+The tray icon needs a StatusNotifier host: KDE Plasma and most GNOME setups with the
+AppIndicator extension work; a bare GNOME Shell shows no icon, in which case the
+widget itself is still usable. Under Wayland the widget's always-on-top and remembered
+position depend on the compositor.
+
+For autostart, drop a `.desktop` file in `~/.config/autostart/`:
+
+```ini
+[Desktop Entry]
+Type=Application
+Name=Claude Code Usage
+Exec=/home/you/.local/bin/claude-usage-linux-x86_64
+X-GNOME-Autostart-enabled=true
+```
+
+---
+
+## Build from source
 
 Requires a stable Rust toolchain (1.82+).
 
 ```bash
+git clone https://github.com/Amithkrishna29z/claude-code-usage.git
+cd claude-code-usage
 cargo run --release -p usage-app
 ```
 
 The binary is ~5 MB and lands at `target/release/usage-app` (`.exe` on Windows).
-There is no main window — look for the tray icon (on Windows it usually starts under
-the "^" overflow). Left-click it to show the widget.
+There is no main window — look for the tray icon and left-click it to show the widget.
 
 ### Linux build dependencies
 
-The GUI and tray need development headers:
+Building (as opposed to running) needs the development headers:
 
 ```bash
 sudo apt-get install -y \
@@ -191,6 +291,7 @@ request:
 | **lint** | `cargo fmt --check` and `cargo clippy`, with `-D warnings` |
 | **test** | Core test suite on Ubuntu, Windows, and macOS; full workspace build on each |
 | **build** | Release binaries for `x86_64-pc-windows-msvc`, `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, uploaded as artifacts |
+| **rolling** | On every push to `main`, replaces the `latest` prerelease with the fresh binaries |
 | **release** | On a `v*` tag, collects those binaries into a GitHub Release |
 
 Cutting a release:
@@ -198,9 +299,6 @@ Cutting a release:
 ```bash
 git tag v0.1.0 && git push origin v0.1.0
 ```
-
-> **This directory is not a git repository yet**, so nothing will run until it is one
-> with a GitHub remote: `git init && git add . && git commit && git remote add origin …`
 
 ---
 
