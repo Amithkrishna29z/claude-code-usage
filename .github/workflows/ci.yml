@@ -137,6 +137,55 @@ jobs:
           path: dist/${{ matrix.binary }}
           if-no-files-found: error
 
+  rolling:
+    name: Refresh rolling "latest" build
+    # Every commit that lands on main — direct or via a merged PR — refreshes a
+    # single prerelease so the newest build is always downloadable without a login
+    # and without waiting for a version tag.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint, test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Package
+        run: |
+          mkdir -p release
+          for dir in artifacts/*/; do
+            name=$(basename "$dir")
+            file=$(find "$dir" -type f | head -n 1)
+            ext=""
+            case "$file" in *.exe) ext=".exe" ;; esac
+            cp "$file" "release/${name}${ext}"
+          done
+          ls -l release
+
+      - name: Replace the latest prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s\n' \
+            "Automatic build of \`main\` at commit \`${GITHUB_SHA:0:7}\`." \
+            "" \
+            "This prerelease is replaced on every push to main, so its contents change over time. For a fixed download, use a tagged release instead." \
+            "" \
+            "Binaries are unsigned: macOS Gatekeeper blocks them until the quarantine attribute is cleared, and the Linux build needs GTK and libayatana-appindicator installed." \
+            > notes.md
+
+          # Delete and recreate so the "latest" tag follows main rather than staying
+          # pinned to whichever commit first created it. A missing release is fine.
+          gh release delete latest --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create latest release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Latest main build" \
+            --notes-file notes.md
+
   release:
     name: Publish release
     # Only for tag pushes, and only once every platform has built.
