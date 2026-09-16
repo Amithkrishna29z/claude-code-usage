@@ -36,11 +36,40 @@ impl ConfigService {
         self.config_dir.join("config.json")
     }
 
+    /// Reads the config, falling back to defaults for a missing or unparseable file.
+    ///
+    /// A UTF-8 BOM is stripped first. Windows editors add one routinely — Notepad and
+    /// PowerShell's `Set-Content -Encoding utf8` both do — and `serde_json` rejects
+    /// it, which would silently discard every hand-edited setting.
     pub fn load(&self) -> AppConfig {
-        std::fs::read_to_string(self.config_path())
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default()
+        match self.read() {
+            Ok(Some(config)) => config,
+            Ok(None) => AppConfig::default(),
+            Err(err) => {
+                eprintln!(
+                    "usage: {} is not valid JSON ({err}); using defaults and leaving the \
+                     file alone so your settings are not overwritten.",
+                    self.config_path().display()
+                );
+                AppConfig::default()
+            }
+        }
+    }
+
+    /// `Ok(None)` means "no file yet", which is normal on a first run. `Err` means the
+    /// file exists but could not be parsed, and the caller must not overwrite it.
+    fn read(&self) -> Result<Option<AppConfig>, serde_json::Error> {
+        let Ok(text) = std::fs::read_to_string(self.config_path()) else {
+            return Ok(None);
+        };
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        serde_json::from_str(text).map(Some)
+    }
+
+    /// Whether the on-disk config can be read back. The app uses this to avoid
+    /// clobbering a file that is mid-edit or malformed.
+    pub fn is_readable(&self) -> bool {
+        self.read().is_ok()
     }
 
     pub fn save(&self, config: &AppConfig) -> std::io::Result<()> {

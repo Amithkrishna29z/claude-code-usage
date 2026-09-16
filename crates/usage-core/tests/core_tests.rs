@@ -418,3 +418,38 @@ fn unknown_and_missing_keys_do_not_break_loading() {
     assert_eq!(loaded.token_limit, 99);
     assert!(loaded.use_official_usage); // defaulted, not lost
 }
+
+#[test]
+fn config_with_a_utf8_bom_still_loads() {
+    // Notepad and PowerShell's `Set-Content -Encoding utf8` both prepend a BOM on
+    // Windows. serde_json rejects it, which used to silently discard every setting
+    // in a hand-edited file — and the app then overwrote the file with defaults.
+    let temp = TempDir::new("bom");
+    let service = ConfigService::with_dir(temp.path());
+
+    let body = br#"{ "token_limit": 777, "use_official_usage": false }"#;
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(body);
+    std::fs::write(service.config_path(), bytes).unwrap();
+
+    let loaded = service.load();
+    assert_eq!(loaded.token_limit, 777);
+    assert!(!loaded.use_official_usage);
+    assert!(service.is_readable());
+}
+
+#[test]
+fn unparseable_config_is_reported_as_unreadable() {
+    // The app checks this before saving, so a malformed file the user is mid-edit
+    // never gets clobbered with defaults.
+    let temp = TempDir::new("unreadable");
+    let service = ConfigService::with_dir(temp.path());
+
+    std::fs::write(service.config_path(), "{ half an edit").unwrap();
+    assert!(!service.is_readable());
+    assert_eq!(service.load().token_limit, 20_000_000); // defaults, but non-fatal
+
+    // A file that simply does not exist is readable in this sense: writing is safe.
+    let fresh = TempDir::new("fresh");
+    assert!(ConfigService::with_dir(fresh.path()).is_readable());
+}

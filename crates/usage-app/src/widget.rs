@@ -13,6 +13,18 @@ use crate::visuals;
 
 pub const WIDGET_SIZE: Vec2 = Vec2::new(122.0, 142.0);
 
+/// Where the widget parks when "hidden".
+///
+/// It is deliberately moved off-screen rather than hidden with
+/// `ViewportCommand::Visible(false)`: an invisible window stops receiving redraws
+/// entirely, which stalls `update()` — and with it the tray polling — so the widget
+/// could never be brought back. Parked off-screen the event loop keeps running and
+/// the tray stays responsive.
+pub const PARKED: egui::Pos2 = egui::pos2(-32000.0, -32000.0);
+
+/// Fallback placement when showing a widget that has no remembered position.
+const DEFAULT_POSITION: egui::Pos2 = egui::pos2(100.0, 100.0);
+
 /// How long without new Claude activity before the widget shows "stale".
 const STALE_AFTER_MINUTES: i64 = 10;
 
@@ -48,6 +60,11 @@ impl WidgetApp {
     }
 
     fn persist(&self) {
+        // If the file on disk is malformed we are running on defaults, and writing
+        // would erase whatever the user was trying to set. Leave it for them to fix.
+        if !self.config_service.is_readable() {
+            return;
+        }
         if let Err(err) = self.config_service.save(&self.config) {
             eprintln!("usage: could not save config: {err}");
         }
@@ -66,13 +83,30 @@ impl WidgetApp {
     }
 
     fn toggle_widget(&mut self, ctx: &egui::Context) {
-        self.visible = !self.visible;
-        self.config.widget_visible = self.visible;
-        ctx.send_viewport_cmd(ViewportCommand::Visible(self.visible));
-        if self.visible {
+        self.set_visible(ctx, !self.visible);
+    }
+
+    /// Parks the window off-screen or brings it back to its remembered spot. See
+    /// [`PARKED`] for why this is a move rather than a real hide.
+    fn set_visible(&mut self, ctx: &egui::Context, visible: bool) {
+        self.visible = visible;
+        self.config.widget_visible = visible;
+
+        if visible {
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(self.shown_position()));
             ctx.send_viewport_cmd(ViewportCommand::Focus);
+        } else {
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(PARKED));
         }
+
         self.persist();
+    }
+
+    fn shown_position(&self) -> egui::Pos2 {
+        match (self.config.widget_left, self.config.widget_top) {
+            (Some(x), Some(y)) => egui::pos2(x, y),
+            _ => DEFAULT_POSITION,
+        }
     }
 }
 
@@ -92,7 +126,7 @@ impl eframe::App for WidgetApp {
                 eprintln!("usage: no system tray available; widget runs standalone.");
             }
             if !self.visible {
-                ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(PARKED));
             }
         }
 
@@ -275,10 +309,19 @@ impl WidgetApp {
 
     /// Records the window position after a drag so it comes back where it was left.
     fn remember_position(&mut self, ctx: &egui::Context) {
+        // While parked the reported position is the off-screen one; recording it
+        // would lose the real spot and strand the widget when it is shown again.
+        if !self.visible {
+            return;
+        }
+
         let Some(outer) = ctx.input(|i| i.viewport().outer_rect) else {
             return;
         };
         let (left, top) = (outer.min.x, outer.min.y);
+        if left <= PARKED.x + 1.0 || top <= PARKED.y + 1.0 {
+            return;
+        }
 
         let moved = self.config.widget_left != Some(left) || self.config.widget_top != Some(top);
         let settled = !ctx.input(|i| i.pointer.any_down());
@@ -338,9 +381,12 @@ fn arc(
     }
 }
 
-/// Where the widget should first appear: bottom-right of the primary work area,
-/// unless a remembered position exists.
+/// Where the window should be created. A widget that was hidden last time starts
+/// parked off-screen, so it never flashes on screen before being moved.
 pub fn initial_position(config: &AppConfig) -> Option<egui::Pos2> {
+    if !config.widget_visible {
+        return Some(PARKED);
+    }
     match (config.widget_left, config.widget_top) {
         (Some(x), Some(y)) => Some(egui::pos2(x, y)),
         _ => None,
