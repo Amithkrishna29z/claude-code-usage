@@ -1,0 +1,54 @@
+<Window x:Class="ClaudeCodeUsage.App.UI.WidgetWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Claude Code Usage"
+        Width="122" Height="142"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        Topmost="True" ShowInTaskbar="False" ResizeMode="NoResize"
+        SnapsToDevicePixels="True" UseLayoutRounding="True">
+
+    <!-- Deliberately minimal: two rings, the session percent, and one compact line.
+         Everything else (both reset times, the data source, freshness) lives in the
+         tooltip, so the resting state stays quiet without losing information. -->
+    <Border x:Name="Card" CornerRadius="10" Background="#EE1E1E1E"
+            BorderBrush="#33FFFFFF" BorderThickness="1"
+            MouseLeftButtonDown="OnDragStart" MouseLeftButtonUp="OnDragEnd">
+        <Border.Effect>
+            <DropShadowEffect BlurRadius="12" ShadowDepth="0" Opacity="0.55" Color="Black"/>
+        </Border.Effect>
+
+        <Grid Margin="7,6,7,6">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="102"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- Close button (top-right) -->
+            <TextBlock Grid.Row="0" Text="✕" Foreground="#66FFFFFF" FontSize="9" Panel.ZIndex="1"
+                       HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-3,-2,0"
+                       Cursor="Hand" MouseLeftButtonUp="OnCloseClick"/>
+
+            <!-- Concentric rings: outer = 5-hour session, inner = 7-day weekly -->
+            <Grid Grid.Row="0" Width="102" Height="102" HorizontalAlignment="Center">
+                <Ellipse Width="92" Height="92" Stroke="#28FFFFFF" StrokeThickness="8"/>
+                <Path x:Name="SessionArc" Stroke="{x:Null}" StrokeThickness="8"
+                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+
+                <Ellipse Width="68" Height="68" Stroke="#20FFFFFF" StrokeThickness="5.5"/>
+                <Path x:Name="WeeklyArc" Stroke="{x:Null}" StrokeThickness="5.5"
+                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+
+                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                    <TextBlock x:Name="PercentText" Text="—" Foreground="White"
+                               FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                    <TextBlock x:Name="StatusText" Text="" Foreground="#99FFFFFF"
+                               FontSize="8" HorizontalAlignment="Center" Margin="0,-3,0,0"/>
+                </StackPanel>
+            </Grid>
+
+            <!-- One line: weekly percent and time to the session reset -->
+            <TextBlock Grid.Row="1" x:Name="CompactText" Text="" Foreground="#AAFFFFFF"
+                       FontSize="9" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+        </Grid>
+    </Border>
+</Window>

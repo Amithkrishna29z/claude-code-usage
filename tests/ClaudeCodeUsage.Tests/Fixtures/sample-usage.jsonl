@@ -1,0 +1,7 @@
+{"type":"user","timestamp":"2026-08-15T09:59:00.000Z","message":{"role":"user","content":"hello, no usage block here"}}
+{"type":"assistant","timestamp":"2026-08-15T00:00:00.000Z","message":{"id":"m1","role":"assistant","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":200,"cache_read_input_tokens":1000}}}
+this line is not valid json and must be skipped without crashing
+{"type":"assistant","timestamp":"2026-08-15T10:00:00.000Z","message":{"id":"m2","role":"assistant","usage":{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":2000,"cache_read_input_tokens":4000}}}
+{"type":"assistant","timestamp":"2026-08-15T10:30:00.000Z","message":{"id":"m3","role":"assistant","usage":{"input_tokens":200,"output_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":500}}}
+{"type":"assistant","timestamp":"2026-08-15T10:30:00.000Z","message":{"id":"m3","role":"assistant","usage":{"input_tokens":200,"output_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":500}}}
+{"type":"assistant","timestamp":"2026-08-15T10:45:00.000Z","message":{"id":"m4","role":"assistant","usage":{"input_tokens":10,"output_tokens":5}}}
