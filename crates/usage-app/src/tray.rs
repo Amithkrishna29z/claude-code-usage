@@ -20,12 +20,29 @@ pub enum TrayCommand {
     Quit,
 }
 
+/// The menu item ids, kept on the main thread so `poll` can map an event back to a
+/// command. On Linux the items are built on the GTK thread, so the ids travel back.
+struct MenuIds {
+    toggle: MenuId,
+    refresh: MenuId,
+    reload: MenuId,
+    quit: MenuId,
+}
+
+/// What the main thread asks the Linux GTK thread to apply. `TrayIcon` is not `Send`,
+/// so the pixels cross the channel and the `Icon` is built on the far side.
+#[cfg(target_os = "linux")]
+enum TrayUpdate {
+    Icon(Vec<u8>),
+    Tooltip(String),
+}
+
 pub struct Tray {
+    #[cfg(not(target_os = "linux"))]
     icon: TrayIcon,
-    toggle_id: MenuId,
-    refresh_id: MenuId,
-    reload_id: MenuId,
-    quit_id: MenuId,
+    #[cfg(target_os = "linux")]
+    updates: std::sync::mpsc::Sender<TrayUpdate>,
+    ids: MenuIds,
     /// The rings last drawn, so we only rebuild the icon when it would change.
     last_drawn: Option<(i64, i64)>,
 }
@@ -33,34 +50,76 @@ pub struct Tray {
 impl Tray {
     /// Must be called on the main thread — macOS requires it, and Windows needs the
     /// creating thread to own a message pump.
+    #[cfg(not(target_os = "linux"))]
     pub fn new() -> Option<Self> {
-        let toggle = MenuItem::new("Show/hide widget", true, None);
-        let refresh = MenuItem::new("Refresh now", true, None);
-        let reload = MenuItem::new("Reload settings", true, None);
-        let quit = MenuItem::new("Quit", true, None);
-
-        let menu = Menu::new();
-        menu.append(&toggle).ok()?;
-        menu.append(&refresh).ok()?;
-        menu.append(&PredefinedMenuItem::separator()).ok()?;
-        menu.append(&reload).ok()?;
-        menu.append(&PredefinedMenuItem::separator()).ok()?;
-        menu.append(&quit).ok()?;
-
-        let placeholder = UsageSnapshot::empty(UsageState::NoData, 0, chrono::Utc::now());
-        let icon = TrayIconBuilder::new()
-            .with_menu(Box::new(menu))
-            .with_tooltip("Claude Code Usage")
-            .with_icon(render_icon(&placeholder))
-            .build()
-            .ok()?;
+        let (menu, ids) = build_menu()?;
+        let icon = build_tray(menu).ok()?;
 
         Some(Self {
             icon,
-            toggle_id: toggle.id().clone(),
-            refresh_id: refresh.id().clone(),
-            reload_id: reload.id().clone(),
-            quit_id: quit.id().clone(),
+            ids,
+            last_drawn: None,
+        })
+    }
+
+    /// Linux wants the tray on a thread running a GTK main loop, which eframe's winit
+    /// loop is not: `gtk::init` has never been called there, so building a menu on it
+    /// panics outright. So GTK gets a thread of its own, owns the tray icon for the
+    /// life of the process, and takes updates over a channel. Clicks and menu
+    /// activations still arrive through tray-icon's global receivers, which are
+    /// cross-thread, so `poll` stays on the main thread unchanged.
+    #[cfg(target_os = "linux")]
+    pub fn new() -> Option<Self> {
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Option<MenuIds>>();
+        let (updates, incoming) = std::sync::mpsc::channel::<TrayUpdate>();
+
+        std::thread::Builder::new()
+            .name("tray-gtk".to_owned())
+            .spawn(move || {
+                if gtk::init().is_err() {
+                    let _ = ready_tx.send(None);
+                    return;
+                }
+
+                let tray = build_menu().and_then(|(menu, ids)| {
+                    let tray = build_tray(menu).ok()?;
+                    Some((tray, ids))
+                });
+                let Some((tray, ids)) = tray else {
+                    let _ = ready_tx.send(None);
+                    return;
+                };
+                // Drained from inside the GTK loop, since the icon cannot leave this
+                // thread. Half a second is imperceptible for a 5-hour window. Armed
+                // before the handshake, so that if it fails the main thread hears
+                // about it through the dropped sender rather than assuming a tray.
+                gtk::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                    while let Ok(update) = incoming.try_recv() {
+                        match update {
+                            TrayUpdate::Icon(pixels) => {
+                                let _ = tray.set_icon(Some(icon_from(pixels)));
+                            }
+                            TrayUpdate::Tooltip(text) => {
+                                let _ = tray.set_tooltip(Some(text));
+                            }
+                        }
+                    }
+                    gtk::glib::ControlFlow::Continue
+                });
+
+                if ready_tx.send(Some(ids)).is_err() {
+                    return;
+                }
+
+                gtk::main();
+            })
+            .ok()?;
+
+        // Blocks only until GTK is up, and returns None if that thread gave up.
+        let ids = ready_rx.recv().ok().flatten()?;
+        Some(Self {
+            updates,
+            ids,
             last_drawn: None,
         })
     }
@@ -80,16 +139,16 @@ impl Tray {
         }
 
         while let Ok(event) = MenuEvent::receiver().try_recv() {
-            if event.id == self.toggle_id {
+            if event.id == self.ids.toggle {
                 return Some(TrayCommand::ToggleWidget);
             }
-            if event.id == self.refresh_id {
+            if event.id == self.ids.refresh {
                 return Some(TrayCommand::Refresh);
             }
-            if event.id == self.reload_id {
+            if event.id == self.ids.reload {
                 return Some(TrayCommand::ReloadSettings);
             }
-            if event.id == self.quit_id {
+            if event.id == self.ids.quit {
                 return Some(TrayCommand::Quit);
             }
         }
@@ -105,17 +164,76 @@ impl Tray {
         );
         if self.last_drawn != Some(key) {
             self.last_drawn = Some(key);
-            let _ = self.icon.set_icon(Some(render_icon(snapshot)));
+            self.set_icon(render_pixels(snapshot));
         }
 
-        let _ = self
-            .icon
-            .set_tooltip(Some(visuals::detail_text(snapshot, now)));
+        self.set_tooltip(visuals::detail_text(snapshot, now));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn set_icon(&self, pixels: Vec<u8>) {
+        let _ = self.icon.set_icon(Some(icon_from(pixels)));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn set_tooltip(&self, text: String) {
+        let _ = self.icon.set_tooltip(Some(text));
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_icon(&self, pixels: Vec<u8>) {
+        let _ = self.updates.send(TrayUpdate::Icon(pixels));
+    }
+
+    /// Ayatana ignores tooltips, so on Linux the detail text is sent and dropped;
+    /// tray-icon keeps the call as a no-op rather than an error.
+    #[cfg(target_os = "linux")]
+    fn set_tooltip(&self, text: String) {
+        let _ = self.updates.send(TrayUpdate::Tooltip(text));
     }
 }
 
+/// The menu is identical on every platform; only the thread it is built on differs.
+fn build_menu() -> Option<(Menu, MenuIds)> {
+    let toggle = MenuItem::new("Show/hide widget", true, None);
+    let refresh = MenuItem::new("Refresh now", true, None);
+    let reload = MenuItem::new("Reload settings", true, None);
+    let quit = MenuItem::new("Quit", true, None);
+
+    let menu = Menu::new();
+    menu.append(&toggle).ok()?;
+    menu.append(&refresh).ok()?;
+    menu.append(&PredefinedMenuItem::separator()).ok()?;
+    menu.append(&reload).ok()?;
+    menu.append(&PredefinedMenuItem::separator()).ok()?;
+    menu.append(&quit).ok()?;
+
+    Some((
+        menu,
+        MenuIds {
+            toggle: toggle.id().clone(),
+            refresh: refresh.id().clone(),
+            reload: reload.id().clone(),
+            quit: quit.id().clone(),
+        },
+    ))
+}
+
+fn build_tray(menu: Menu) -> tray_icon::Result<TrayIcon> {
+    let placeholder = UsageSnapshot::empty(UsageState::NoData, 0, chrono::Utc::now());
+    TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_tooltip("Claude Code Usage")
+        .with_icon(icon_from(render_pixels(&placeholder)))
+        .build()
+}
+
+fn icon_from(pixels: Vec<u8>) -> Icon {
+    Icon::from_rgba(pixels, SIZE, SIZE).expect("32x32 RGBA buffer is a valid icon")
+}
+
 /// Draws the two rings into a 32x32 RGBA buffer.
-fn render_icon(snapshot: &UsageSnapshot) -> Icon {
+fn render_pixels(snapshot: &UsageSnapshot) -> Vec<u8> {
     let mut pixels = vec![0u8; (SIZE * SIZE * 4) as usize];
 
     let live = snapshot.state == UsageState::Ok;
@@ -148,7 +266,7 @@ fn render_icon(snapshot: &UsageSnapshot) -> Icon {
         draw_disc(&mut pixels, 4.0, visuals::session_color(snapshot));
     }
 
-    Icon::from_rgba(pixels, SIZE, SIZE).expect("32x32 RGBA buffer is a valid icon")
+    pixels
 }
 
 /// A faint full-circle track plus a clockwise progress arc starting at 12 o'clock.

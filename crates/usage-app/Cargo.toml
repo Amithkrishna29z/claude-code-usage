@@ -12,3 +12,8 @@ egui = "0.31.1"
 notify = "8.2.0"
 tray-icon = "0.24.2"
 usage-core = { version = "0.1.0", path = "../usage-core" }
+
+# The tray on Linux is a GTK appindicator: it needs gtk::init() and a GTK main loop
+# on its own thread. Same version tray-icon pulls in, so nothing new is built.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"

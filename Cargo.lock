@@ -3935,6 +3935,7 @@ dependencies = [
  "chrono",
  "eframe",
  "egui",
+ "gtk",
  "notify",
  "tray-icon",
  "usage-core",

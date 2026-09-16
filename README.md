@@ -101,7 +101,7 @@ The binary is dynamically linked against GTK and the appindicator tray, so insta
 runtime libraries first:
 
 ```bash
-# Debian / Ubuntu
+# Debian / Ubuntu / Linux Mint
 sudo apt-get install -y libgtk-3-0 libayatana-appindicator3-1 libxdo3
 
 # Fedora
@@ -116,12 +116,43 @@ chmod +x claude-usage-linux-x86_64
 ./claude-usage-linux-x86_64
 ```
 
-The tray icon needs a StatusNotifier host: KDE Plasma and most GNOME setups with the
-AppIndicator extension work; a bare GNOME Shell shows no icon, in which case the
-widget itself is still usable. Under Wayland the widget's always-on-top and remembered
-position depend on the compositor.
+The tray icon needs a StatusNotifier host: Cinnamon, MATE, Xfce and KDE Plasma all
+provide one, as does GNOME with the AppIndicator extension; a bare GNOME Shell shows no
+icon, in which case the widget itself is still usable. Under Wayland the widget's
+always-on-top and remembered position depend on the compositor.
 
-For autostart, drop a `.desktop` file in `~/.config/autostart/`:
+Two tray behaviours differ here, because the appindicator protocol has no equivalent:
+**left-click does not toggle the widget** — use the menu's *Show/hide widget* — and the
+**hover tooltip with the full readout is absent**, so the widget itself is where the
+numbers live.
+
+#### Linux Mint
+
+Mint is Ubuntu-based (LMDE is Debian-based), so the `apt-get` line above is the right
+one, and Cinnamon's system tray shows appindicator icons without extra setup. End to
+end, from the downloaded file:
+
+```bash
+sudo apt-get install -y libgtk-3-0 libayatana-appindicator3-1 libxdo3
+
+mkdir -p ~/.local/bin
+mv ~/Downloads/claude-usage-linux-x86_64 ~/.local/bin/claude-usage
+chmod +x ~/.local/bin/claude-usage
+~/.local/bin/claude-usage
+```
+
+On Mint 22 (Ubuntu 24.04 base) `libgtk-3-0` is a transitional package and apt pulls in
+`libgtk-3-0t64` instead — that is expected, not an error. Mint's default session is
+X11, so always-on-top and the remembered widget position behave as on Windows.
+
+The icon lands in the panel's system tray, bottom-right; left-click it to toggle the
+widget. To start it at login, use **Menu → Startup Applications → Add → Custom
+command** and point it at `~/.local/bin/claude-usage` (that GUI writes the same
+`~/.config/autostart` entry shown below).
+
+#### Autostart on other desktops
+
+Drop a `.desktop` file in `~/.config/autostart/`:
 
 ```ini
 [Desktop Entry]
@@ -338,6 +369,10 @@ headless in CI on all three platforms.
   differently per platform and deserves a real smoke test before you trust it there.
 - **No settings dialog.** The original C# build had one; this port uses the JSON file
   plus **Reload settings** instead. Say the word if you want the dialog back.
+- **Left-click and tooltips are Windows/macOS only.** The Linux tray speaks the
+  appindicator protocol, which reports menu activations and nothing else: no click
+  events, no tooltip. The menu carries every command, and GTK gets a thread of its own
+  there because `tray-icon` needs a GTK main loop that eframe's event loop is not.
 - **Detail lives on the tray icon**, not the widget. An in-widget hover tooltip gets
   clipped by the 122×142 window, so the full readout moved to the tray tooltip, which
   is a native OS window and cannot clip.
