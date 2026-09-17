@@ -2,6 +2,9 @@
 //! plus a menu. The icon is rasterised by hand into an RGBA buffer so the app needs
 //! no image decoder and no bundled asset files.
 
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::OnceLock;
+
 use tray_icon::menu::{
     CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
 };
@@ -22,6 +25,51 @@ pub enum TrayCommand {
     /// Wear a different face, picked from the Style submenu.
     SetStyle(WidgetStyle),
     Quit,
+}
+
+/// One raw interaction, forwarded from tray-icon's global handlers.
+enum TrayEvent {
+    Click,
+    Menu(MenuId),
+}
+
+/// tray-icon delivers events through process-wide handlers, and installing one
+/// replaces its channel — so this is done exactly once and everything is funnelled
+/// into a channel of our own.
+static EVENTS: OnceLock<Sender<TrayEvent>> = OnceLock::new();
+
+/// Routes tray and menu events into `sender` and wakes the UI thread for each one.
+///
+/// The wake is the point: without it a click is only noticed when the next frame
+/// happens to run, which is a fifth of a second of nothing after every menu pick. With
+/// it the UI can idle as slowly as it likes and still react the instant you click.
+fn install_handlers(sender: Sender<TrayEvent>, wake: impl Fn() + Send + Sync + 'static) {
+    if EVENTS.set(sender).is_err() {
+        return; // already installed; handlers are global and set-once
+    }
+    let wake = std::sync::Arc::new(wake);
+
+    let menu_wake = wake.clone();
+    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        if let Some(tx) = EVENTS.get() {
+            let _ = tx.send(TrayEvent::Menu(event.id));
+        }
+        menu_wake();
+    }));
+
+    TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+        if let TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } = event
+        {
+            if let Some(tx) = EVENTS.get() {
+                let _ = tx.send(TrayEvent::Click);
+            }
+            wake();
+        }
+    }));
 }
 
 /// The menu item ids, kept on the main thread so `poll` can map an event back to a
@@ -57,23 +105,34 @@ pub struct Tray {
     /// Owned here on every platform but Linux, where the GTK thread holds them.
     #[cfg(not(target_os = "linux"))]
     style_items: StyleItems,
+    /// Raw interactions, delivered by the global handlers.
+    events: Receiver<TrayEvent>,
     /// The rings last drawn, so we only rebuild the icon when it would change.
     last_drawn: Option<(i64, i64)>,
+    /// The tooltip last pushed to the shell. Setting a tray tooltip is a syscall, and
+    /// re-sending an unchanged string every frame is enough shell traffic to make the
+    /// app look like it has stopped responding.
+    last_tooltip: Option<String>,
 }
 
 impl Tray {
     /// Must be called on the main thread — macOS requires it, and Windows needs the
     /// creating thread to own a message pump.
     #[cfg(not(target_os = "linux"))]
-    pub fn new(style: WidgetStyle) -> Option<Self> {
+    pub fn new(style: WidgetStyle, wake: impl Fn() + Send + Sync + 'static) -> Option<Self> {
         let (menu, ids, style_items) = build_menu(style)?;
         let icon = build_tray(menu).ok()?;
+
+        let (sender, events) = mpsc::channel();
+        install_handlers(sender, wake);
 
         Some(Self {
             icon,
             ids,
             style_items,
+            events,
             last_drawn: None,
+            last_tooltip: None,
         })
     }
 
@@ -84,7 +143,7 @@ impl Tray {
     /// activations still arrive through tray-icon's global receivers, which are
     /// cross-thread, so `poll` stays on the main thread unchanged.
     #[cfg(target_os = "linux")]
-    pub fn new(style: WidgetStyle) -> Option<Self> {
+    pub fn new(style: WidgetStyle, wake: impl Fn() + Send + Sync + 'static) -> Option<Self> {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Option<MenuIds>>();
         let (updates, incoming) = std::sync::mpsc::channel::<TrayUpdate>();
 
@@ -135,43 +194,44 @@ impl Tray {
 
         // Blocks only until GTK is up, and returns None if that thread gave up.
         let ids = ready_rx.recv().ok().flatten()?;
+
+        let (sender, events) = mpsc::channel();
+        install_handlers(sender, wake);
+
         Some(Self {
             updates,
             ids,
+            events,
             last_drawn: None,
+            last_tooltip: None,
         })
     }
 
-    /// Drains pending tray interactions. Call once per frame.
+    /// Takes the next pending interaction, if any. Call until it returns `None`, so a
+    /// burst of clicks is handled in the frame it arrives rather than one per frame.
     pub fn poll(&self) -> Option<TrayCommand> {
-        // A left-click on the icon toggles the widget, matching the usual tray idiom.
-        while let Ok(event) = TrayIconEvent::receiver().try_recv() {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                return Some(TrayCommand::ToggleWidget);
-            }
-        }
+        while let Ok(event) = self.events.try_recv() {
+            // A left-click on the icon toggles the widget, the usual tray idiom.
+            let id = match event {
+                TrayEvent::Click => return Some(TrayCommand::ToggleWidget),
+                TrayEvent::Menu(id) => id,
+            };
 
-        while let Ok(event) = MenuEvent::receiver().try_recv() {
-            if event.id == self.ids.toggle {
+            if id == self.ids.toggle {
                 return Some(TrayCommand::ToggleWidget);
             }
-            if event.id == self.ids.refresh {
+            if id == self.ids.refresh {
                 return Some(TrayCommand::Refresh);
             }
-            if event.id == self.ids.reload {
+            if id == self.ids.reload {
                 return Some(TrayCommand::ReloadSettings);
             }
-            if event.id == self.ids.quit {
+            if id == self.ids.quit {
                 return Some(TrayCommand::Quit);
             }
             // A check item toggles itself on click, so whatever the user hit, the
             // widget re-ticks the whole group from the style it actually applied.
-            if let Some((style, _)) = self.ids.styles.iter().find(|(_, id)| *id == event.id) {
+            if let Some((style, _)) = self.ids.styles.iter().find(|(_, sid)| *sid == id) {
                 return Some(TrayCommand::SetStyle(*style));
             }
         }
@@ -190,7 +250,11 @@ impl Tray {
             self.set_icon(render_pixels(snapshot));
         }
 
-        self.set_tooltip(visuals::detail_text(snapshot, now));
+        let tooltip = visuals::detail_text(snapshot, now);
+        if self.last_tooltip.as_deref() != Some(tooltip.as_str()) {
+            self.last_tooltip = Some(tooltip.clone());
+            self.set_tooltip(tooltip);
+        }
     }
 
     /// Ticks exactly one item in the Style submenu.
