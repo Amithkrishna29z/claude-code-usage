@@ -16,10 +16,17 @@ use usage_core::models::{OfficialUsage, UsageSnapshot, UsageSource, UsageState};
 use usage_core::{calculator, oauth::OAuthUsageClient, reader, AppConfig};
 
 /// The usage endpoint rate-limits hard, and log writes can fire a refresh every
-/// couple of seconds, so the official figures are cached: fetched at most once per
-/// `refresh_seconds`, and kept serving for [`CACHE_TTL`] after a failure so one blip
-/// does not flip the widget over to the local estimate.
-/// Floor on `refresh_seconds`. Below this the endpoint starts answering 429, which
+/// couple of seconds, so the official figures are cached, and kept serving for
+/// [`CACHE_TTL`] after a failure so one blip does not flip the widget over to the
+/// local estimate.
+///
+/// How long the cache is served for depends on whether anything has actually
+/// happened. An idle widget waits out `refresh_seconds`, because re-asking for
+/// numbers that cannot have moved is pure rate-limit budget. New log activity — or a
+/// refresh the user asked for — means real usage has been spent and the cached
+/// figures are already wrong, so the next fetch goes out as soon as the floor below
+/// allows.
+/// Floor between fetches. Below this the endpoint starts answering 429, which
 /// drops the widget to its local estimate — worse than a slightly stale real number.
 const MIN_FETCH_INTERVAL: i64 = 60;
 const CACHE_TTL: i64 = 900;
@@ -137,18 +144,27 @@ fn worker(
 ) {
     let mut client = OAuthUsageClient::default();
     let mut cache: Option<(OfficialUsage, DateTime<Utc>)> = None;
+    let mut last_activity_seen: Option<DateTime<Utc>> = None;
 
     loop {
-        match commands.recv_timeout(POLL_INTERVAL) {
+        let asked = match commands.recv_timeout(POLL_INTERVAL) {
             Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => return,
             Ok(Command::Reconfigure(new_config)) => {
                 config = *new_config;
                 cache = None; // the directory or the toggle may have changed
+                false
             }
-            Ok(Command::Refresh) | Err(RecvTimeoutError::Timeout) => {}
-        }
+            Ok(Command::Refresh) => true,
+            Err(RecvTimeoutError::Timeout) => false,
+        };
 
-        let snapshot = compute(&config, &mut client, &mut cache);
+        let snapshot = compute(
+            &config,
+            &mut client,
+            &mut cache,
+            &mut last_activity_seen,
+            asked,
+        );
         if snapshots.send(snapshot).is_err() {
             return; // UI is gone
         }
@@ -158,10 +174,16 @@ fn worker(
 
 /// Reads the logs (for freshness and as the fallback), then overlays Anthropic's
 /// official percentages when the endpoint answers.
+///
+/// `asked` marks a refresh somebody wanted — the tray menu, or the log watcher seeing
+/// a write. That, and any log activity newer than `last_activity_seen`, is what earns
+/// this wake an early re-fetch instead of the full `refresh_seconds` wait.
 fn compute(
     config: &AppConfig,
     client: &mut OAuthUsageClient,
     cache: &mut Option<(OfficialUsage, DateTime<Utc>)>,
+    last_activity_seen: &mut Option<DateTime<Utc>>,
+    asked: bool,
 ) -> UsageSnapshot {
     let now = Utc::now();
     let claude_dir = reader::resolve_claude_dir(&config.claude_dir);
@@ -175,11 +197,25 @@ fn compute(
         read.logs_found,
     );
 
+    // An event newer than the last snapshot saw means usage has actually been spent,
+    // so the cached percentages are already behind. `None` sorts below every
+    // timestamp, so the first reading that contains any activity counts as new.
+    let advanced = local.last_activity > *last_activity_seen;
+    if advanced {
+        *last_activity_seen = local.last_activity;
+    }
+
     if !config.use_official_usage {
         return local;
     }
 
-    let Some(official) = official_usage(config, client, cache, now) else {
+    let interval = if asked || advanced {
+        Duration::seconds(MIN_FETCH_INTERVAL)
+    } else {
+        Duration::seconds((config.refresh_seconds as i64).max(MIN_FETCH_INTERVAL))
+    };
+
+    let Some(official) = official_usage(config, client, cache, now, interval) else {
         return local;
     };
     let Some(session) = official.session else {
@@ -200,15 +236,15 @@ fn compute(
     }
 }
 
-/// Returns the official figures, honouring the fetch interval and serving the last
-/// good value while it is still fresh enough.
+/// Returns the official figures, re-fetching only once `interval` has passed since
+/// the last one and serving the last good value while it is still fresh enough.
 fn official_usage(
     config: &AppConfig,
     client: &mut OAuthUsageClient,
     cache: &mut Option<(OfficialUsage, DateTime<Utc>)>,
     now: DateTime<Utc>,
+    interval: Duration,
 ) -> Option<OfficialUsage> {
-    let interval = Duration::seconds((config.refresh_seconds as i64).max(MIN_FETCH_INTERVAL));
     let age = cache.as_ref().map(|(_, at)| now - *at);
 
     if let (Some(age), Some((cached, _))) = (age, cache.as_ref()) {
