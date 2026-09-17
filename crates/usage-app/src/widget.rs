@@ -25,6 +25,17 @@ pub const PARKED: egui::Pos2 = egui::pos2(-32000.0, -32000.0);
 /// Fallback placement when showing a widget that has no remembered position.
 const DEFAULT_POSITION: egui::Pos2 = egui::pos2(100.0, 100.0);
 
+/// A reported position at or beyond this is the park, not somewhere the user put the
+/// window, and must never be remembered as one.
+///
+/// It is a threshold rather than a comparison against [`PARKED`] itself because that
+/// value does not survive the round trip. The move is requested in logical points,
+/// Windows clamps the physical result to `i16::MIN`, and egui reads it back divided by
+/// the scale factor — so on a 150% display the park reports as -21845, nowhere near
+/// the -32000 that was asked for. Matching the sentinel exactly meant the park was
+/// saved as the remembered position, and the widget could never be shown again.
+const OFF_SCREEN: f32 = -10_000.0;
+
 /// Edge length of the minimise/close hit areas in the card's top corners. Small
 /// enough to sit in the gap between the outer ring and the card's corner.
 const CORNER_BUTTON: f32 = 14.0;
@@ -280,7 +291,7 @@ impl WidgetApp {
             return;
         };
         let (left, top) = (outer.min.x, outer.min.y);
-        if left <= PARKED.x + 1.0 || top <= PARKED.y + 1.0 {
+        if left <= OFF_SCREEN || top <= OFF_SCREEN {
             return;
         }
 
