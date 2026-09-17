@@ -33,9 +33,9 @@ pub fn size_of(style: WidgetStyle) -> Vec2 {
     match style {
         WidgetStyle::Rings => Vec2::new(122.0, 142.0),
         WidgetStyle::Bars => Vec2::new(172.0, 88.0),
-        WidgetStyle::Pill => Vec2::new(176.0, 40.0),
+        WidgetStyle::Pill => Vec2::new(196.0, 40.0),
         WidgetStyle::Minimal => Vec2::new(78.0, 78.0),
-        WidgetStyle::Text => Vec2::new(212.0, 32.0),
+        WidgetStyle::Text => Vec2::new(244.0, 32.0),
     }
 }
 
@@ -269,7 +269,7 @@ fn text(ui: &mut egui::Ui, snapshot: &UsageSnapshot, now: DateTime<Utc>) {
     let percent_font = FontId::proportional(11.0);
     let percent_width = text_width(painter, &percent, percent_font.clone());
 
-    let rest = weekly_and_time(snapshot, now);
+    let rest = flagged_summary(snapshot, now);
     let rest_font = FontId::proportional(9.5);
     let rest = if rest.is_empty() {
         String::new()
@@ -342,15 +342,42 @@ fn weekly_and_time(snapshot: &UsageSnapshot, now: DateTime<Utc>) -> String {
     parts.join("  ·  ")
 }
 
-/// Time left on its own, for the faces that show the weekly figure elsewhere.
+/// The time left, behind the source marker when there is one, for the faces that show
+/// the weekly figure elsewhere.
+///
+/// The marker is not optional decoration. A local estimate is measured against a
+/// placeholder token budget and can read anything at all -- 210% is a perfectly
+/// ordinary value for it -- so a face that prints that number without saying it is an
+/// estimate is stating a falsehood. Only the rings and minimal faces have a caption
+/// slot of their own; the rest have to carry it here.
 fn footer_line(snapshot: &UsageSnapshot, now: DateTime<Utc>) -> String {
-    if snapshot.reset_at().is_none() {
-        return caption(snapshot, now);
+    let mut parts: Vec<String> = Vec::with_capacity(2);
+
+    let caption = caption(snapshot, now);
+    if !caption.is_empty() {
+        parts.push(caption);
     }
-    format!(
-        "{} left",
-        visuals::format_duration(snapshot.time_until_reset(now))
-    )
+    if snapshot.reset_at().is_some() {
+        parts.push(format!(
+            "{} left",
+            visuals::format_duration(snapshot.time_until_reset(now))
+        ));
+    }
+
+    parts.join(" · ")
+}
+
+/// [`weekly_and_time`] behind the source marker, for the text face -- the one face
+/// with no second line and no caption slot to put it in.
+fn flagged_summary(snapshot: &UsageSnapshot, now: DateTime<Utc>) -> String {
+    let caption = caption(snapshot, now);
+    let rest = weekly_and_time(snapshot, now);
+
+    match (caption.is_empty(), rest.is_empty()) {
+        (true, _) => rest,
+        (false, true) => caption,
+        (false, false) => format!("{caption} · {rest}"),
+    }
 }
 
 /// The caption shown under the percent. Blank when everything is healthy and official
