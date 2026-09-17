@@ -28,7 +28,7 @@ const DEFAULT_POSITION: egui::Pos2 = egui::pos2(100.0, 100.0);
 /// How long without new Claude activity before the widget shows "stale".
 const STALE_AFTER_MINUTES: i64 = 10;
 
-/// Ring geometry, as fractions of the ring box.
+/// Ring geometry. Outer is the 7-day weekly window, inner the 5-hour session.
 const OUTER_RADIUS: f32 = 46.0;
 const OUTER_WIDTH: f32 = 8.0;
 const INNER_RADIUS: f32 = 34.0;
@@ -208,7 +208,7 @@ impl WidgetApp {
             rgb(visuals::GREY)
         };
 
-        // Outer ring: session.
+        // Outer ring: the 7-day weekly window.
         arc(
             painter,
             centre,
@@ -217,19 +217,19 @@ impl WidgetApp {
             1.0,
             track_color(),
         );
-        if live {
-            let fraction = self.snapshot.session.map(|w| w.utilization).unwrap_or(0.0);
+        if let Some(weekly) = self.snapshot.weekly {
             arc(
                 painter,
                 centre,
                 OUTER_RADIUS,
                 OUTER_WIDTH,
-                fraction,
-                session_color,
+                weekly.utilization,
+                rgb(visuals::color_for(Some(weekly))),
             );
         }
 
-        // Inner ring: weekly.
+        // Inner ring: the 5-hour session window, sitting next to the percent in the
+        // centre that reports the same number.
         arc(
             painter,
             centre,
@@ -238,14 +238,15 @@ impl WidgetApp {
             1.0,
             track_color(),
         );
-        if let Some(weekly) = self.snapshot.weekly {
+        if live {
+            let fraction = self.snapshot.session.map(|w| w.utilization).unwrap_or(0.0);
             arc(
                 painter,
                 centre,
                 INNER_RADIUS,
                 INNER_WIDTH,
-                weekly.utilization,
-                rgb(visuals::color_for(Some(weekly))),
+                fraction,
+                session_color,
             );
         }
 

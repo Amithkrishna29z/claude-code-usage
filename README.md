@@ -15,7 +15,7 @@ local Claude Code session logs.
 
 **Mini widget** (always-on-top, frameless, draggable) — deliberately minimal:
 
-- **Concentric rings**: outer = 5-hour session, inner = 7-day weekly. Each is coloured
+- **Concentric rings**: outer = 7-day weekly, inner = 5-hour session. Each is coloured
   independently: **green < 70%**, **orange 70–90%**, **red > 90%**.
 - The session percent in the centre, since that is the limit that usually bites first.
 - One line beneath: `wk 54%  ·  2h 20m left`.

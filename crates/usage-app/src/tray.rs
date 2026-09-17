@@ -243,28 +243,30 @@ fn render_pixels(snapshot: &UsageSnapshot) -> Vec<u8> {
         0.0
     };
 
-    // Outer ring: session.
+    // Outer ring: weekly, drawn only when the official source supplied it. The
+    // fallback has no weekly figure, so only the faint track shows there.
+    if let Some(weekly) = snapshot.weekly {
+        draw_ring(
+            &mut pixels,
+            13.0,
+            2.0,
+            weekly.utilization,
+            visuals::color_for(Some(weekly)),
+        );
+    }
+
+    // Inner ring: session. Drawn second so it wins any overlap at this size.
     draw_ring(
         &mut pixels,
-        13.0,
-        2.0,
+        8.0,
+        1.5,
         session_fraction,
         visuals::session_color(snapshot),
     );
 
-    // Inner ring: weekly, drawn only when the official source supplied it.
-    if let Some(weekly) = snapshot.weekly {
-        draw_ring(
-            &mut pixels,
-            8.0,
-            1.5,
-            weekly.utilization,
-            visuals::color_for(Some(weekly)),
-        );
-    } else {
-        // A centre dot conveys state at tiny sizes even when the arc is short.
-        draw_disc(&mut pixels, 4.0, visuals::session_color(snapshot));
-    }
+    // A centre dot keeps the session colour legible at 32px even when its arc is
+    // short — the inner ring alone is only a few pixels of colour near 0%.
+    draw_disc(&mut pixels, 3.0, visuals::session_color(snapshot));
 
     pixels
 }
