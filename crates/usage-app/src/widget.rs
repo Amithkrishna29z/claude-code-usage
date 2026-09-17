@@ -163,6 +163,11 @@ impl WidgetApp {
         ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
         ctx.send_viewport_cmd(ViewportCommand::MinInnerSize(size));
         ctx.send_viewport_cmd(ViewportCommand::MaxInnerSize(size));
+        // This frame draws the new face at the old size; the frame that draws it at
+        // the new one is only scheduled by the resize coming back round as an event.
+        // Ask for it directly instead, so the card is never left mid-change waiting
+        // for the window manager to say something.
+        ctx.request_repaint();
 
         if let Some(tray) = self.tray.as_ref() {
             tray.set_style(style);
@@ -213,6 +218,9 @@ impl eframe::App for WidgetApp {
                     ctx.send_viewport_cmd(ViewportCommand::Close);
                 }
             }
+            // Every one of these changes what the card shows. None of them should
+            // wait for the idle tick to come round.
+            ctx.request_repaint();
         }
 
         if self.config.style != self.applied_style {
@@ -228,12 +236,18 @@ impl eframe::App for WidgetApp {
             self.draw_card(ctx, now);
         }
 
-        // Keep relative times live while the window is hidden as well as shown. One
-        // second is as fine as the countdown is ever displayed, and this is only the
-        // idle ceiling: pointer input repaints immediately, so dragging stays smooth,
-        // and tray clicks wake the loop through the handler installed with the icon
-        // rather than waiting for a tick to come round.
-        ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        // Keep relative times live while the window is hidden as well as shown.
+        //
+        // The countdown is never displayed finer than a second, so this is not about
+        // the display: it is the floor under everything that arrives from outside the
+        // event loop. A tray click normally wakes the loop through the handler
+        // installed with the icon and is acted on in about 15ms, but the click is
+        // delivered from inside the menu's own modal loop, and a wake raised there can
+        // be missed. When that happens this tick is what catches it, so it sets the
+        // worst case a style change can take — a second of apparently nothing, which
+        // is far more jarring than the steady cost of a quarter-second tick that now
+        // does almost no work.
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
     }
 }
 
