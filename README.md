@@ -112,6 +112,28 @@ LaunchAgent — a `~/Library/LaunchAgents/com.local.claude-usage.plist` with
 
 ### Linux
 
+One command, instead of everything below it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Amithkrishna29z/claude-code-usage/main/install.sh | sh
+```
+
+It works out which runtime libraries you are missing and shows you the install command
+before running anything with `sudo`, downloads the latest release to
+`~/.local/bin/claude-usage`, and writes the menu and autostart entries. `--nightly`
+takes the rolling build of `main` instead, `--no-autostart` skips the login entry, and
+`--uninstall` reverses the lot (your settings are left alone). Down a pipe those flags
+need `-s --` to reach the script rather than `sh`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Amithkrishna29z/claude-code-usage/main/install.sh | sh -s -- --nightly
+```
+
+Piping a script into `sh` is a real trust decision, so [read it first](install.sh) if
+you would rather, and run it from disk.
+
+#### By hand
+
 The binary is dynamically linked against GTK and the appindicator tray, so install the
 runtime libraries first:
 
@@ -172,7 +194,8 @@ command** and point it at `~/.local/bin/claude-usage` (that GUI writes the same
 
 #### Autostart on other desktops
 
-Drop a `.desktop` file in `~/.config/autostart/`:
+`install.sh` writes this for you. By hand, drop a `.desktop` file in
+`~/.config/autostart/`:
 
 ```ini
 [Desktop Entry]
