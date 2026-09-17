@@ -17,5 +17,6 @@ pub mod reader;
 pub use config::ConfigService;
 pub use models::{
     AppConfig, OfficialUsage, UsageEvent, UsageSnapshot, UsageSource, UsageState, UsageWindow,
+    WidgetStyle,
 };
 pub use oauth::OAuthUsageClient;

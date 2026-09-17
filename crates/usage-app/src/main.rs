@@ -5,6 +5,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod monitor;
+mod styles;
 mod tray;
 mod visuals;
 mod widget;
@@ -13,16 +14,19 @@ use eframe::egui;
 use usage_core::ConfigService;
 
 use crate::monitor::UsageMonitor;
-use crate::widget::{WidgetApp, WIDGET_SIZE};
+use crate::widget::WidgetApp;
 
 fn main() -> eframe::Result<()> {
     let config_service = ConfigService::new();
     let config = config_service.load();
 
+    // Each face has its own size, and the window is resized when the style changes.
+    let size = styles::size_of(config.style);
+
     let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size(WIDGET_SIZE)
-        .with_min_inner_size(WIDGET_SIZE)
-        .with_max_inner_size(WIDGET_SIZE)
+        .with_inner_size(size)
+        .with_min_inner_size(size)
+        .with_max_inner_size(size)
         .with_resizable(false)
         .with_decorations(false)
         .with_transparent(true)

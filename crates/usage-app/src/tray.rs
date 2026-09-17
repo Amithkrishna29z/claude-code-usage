@@ -2,9 +2,11 @@
 //! plus a menu. The icon is rasterised by hand into an RGBA buffer so the app needs
 //! no image decoder and no bundled asset files.
 
-use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{
+    CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
+};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use usage_core::{UsageSnapshot, UsageState};
+use usage_core::{UsageSnapshot, UsageState, WidgetStyle};
 
 use crate::visuals;
 
@@ -17,6 +19,8 @@ pub enum TrayCommand {
     Refresh,
     /// Re-read config.json from disk and apply it without restarting.
     ReloadSettings,
+    /// Wear a different face, picked from the Style submenu.
+    SetStyle(WidgetStyle),
     Quit,
 }
 
@@ -27,7 +31,13 @@ struct MenuIds {
     refresh: MenuId,
     reload: MenuId,
     quit: MenuId,
+    /// One id per style, so a click in the submenu maps straight back to a face.
+    styles: Vec<(WidgetStyle, MenuId)>,
 }
+
+/// The submenu's check items. They are not `Send`, so they stay on whichever thread
+/// built the menu — the main thread everywhere but Linux, the GTK thread there.
+type StyleItems = Vec<(WidgetStyle, CheckMenuItem)>;
 
 /// What the main thread asks the Linux GTK thread to apply. `TrayIcon` is not `Send`,
 /// so the pixels cross the channel and the `Icon` is built on the far side.
@@ -35,6 +45,7 @@ struct MenuIds {
 enum TrayUpdate {
     Icon(Vec<u8>),
     Tooltip(String),
+    Style(WidgetStyle),
 }
 
 pub struct Tray {
@@ -43,6 +54,9 @@ pub struct Tray {
     #[cfg(target_os = "linux")]
     updates: std::sync::mpsc::Sender<TrayUpdate>,
     ids: MenuIds,
+    /// Owned here on every platform but Linux, where the GTK thread holds them.
+    #[cfg(not(target_os = "linux"))]
+    style_items: StyleItems,
     /// The rings last drawn, so we only rebuild the icon when it would change.
     last_drawn: Option<(i64, i64)>,
 }
@@ -51,13 +65,14 @@ impl Tray {
     /// Must be called on the main thread — macOS requires it, and Windows needs the
     /// creating thread to own a message pump.
     #[cfg(not(target_os = "linux"))]
-    pub fn new() -> Option<Self> {
-        let (menu, ids) = build_menu()?;
+    pub fn new(style: WidgetStyle) -> Option<Self> {
+        let (menu, ids, style_items) = build_menu(style)?;
         let icon = build_tray(menu).ok()?;
 
         Some(Self {
             icon,
             ids,
+            style_items,
             last_drawn: None,
         })
     }
@@ -69,7 +84,7 @@ impl Tray {
     /// activations still arrive through tray-icon's global receivers, which are
     /// cross-thread, so `poll` stays on the main thread unchanged.
     #[cfg(target_os = "linux")]
-    pub fn new() -> Option<Self> {
+    pub fn new(style: WidgetStyle) -> Option<Self> {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Option<MenuIds>>();
         let (updates, incoming) = std::sync::mpsc::channel::<TrayUpdate>();
 
@@ -81,11 +96,11 @@ impl Tray {
                     return;
                 }
 
-                let tray = build_menu().and_then(|(menu, ids)| {
+                let tray = build_menu(style).and_then(|(menu, ids, style_items)| {
                     let tray = build_tray(menu).ok()?;
-                    Some((tray, ids))
+                    Some((tray, ids, style_items))
                 });
-                let Some((tray, ids)) = tray else {
+                let Some((tray, ids, style_items)) = tray else {
                     let _ = ready_tx.send(None);
                     return;
                 };
@@ -102,6 +117,9 @@ impl Tray {
                             TrayUpdate::Tooltip(text) => {
                                 let _ = tray.set_tooltip(Some(text));
                             }
+                            // The check items live on this thread, so the main
+                            // thread asks for the tick rather than moving it.
+                            TrayUpdate::Style(style) => check_only(&style_items, style),
                         }
                     }
                     gtk::glib::ControlFlow::Continue
@@ -151,6 +169,11 @@ impl Tray {
             if event.id == self.ids.quit {
                 return Some(TrayCommand::Quit);
             }
+            // A check item toggles itself on click, so whatever the user hit, the
+            // widget re-ticks the whole group from the style it actually applied.
+            if let Some((style, _)) = self.ids.styles.iter().find(|(_, id)| *id == event.id) {
+                return Some(TrayCommand::SetStyle(*style));
+            }
         }
         None
     }
@@ -168,6 +191,17 @@ impl Tray {
         }
 
         self.set_tooltip(visuals::detail_text(snapshot, now));
+    }
+
+    /// Ticks exactly one item in the Style submenu.
+    #[cfg(not(target_os = "linux"))]
+    pub fn set_style(&self, style: WidgetStyle) {
+        check_only(&self.style_items, style);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn set_style(&self, style: WidgetStyle) {
+        let _ = self.updates.send(TrayUpdate::Style(style));
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -194,29 +228,51 @@ impl Tray {
 }
 
 /// The menu is identical on every platform; only the thread it is built on differs.
-fn build_menu() -> Option<(Menu, MenuIds)> {
+/// `style` is the face to show ticked when the menu first opens.
+fn build_menu(style: WidgetStyle) -> Option<(Menu, MenuIds, StyleItems)> {
     let toggle = MenuItem::new("Show/hide widget", true, None);
     let refresh = MenuItem::new("Refresh now", true, None);
     let reload = MenuItem::new("Reload settings", true, None);
     let quit = MenuItem::new("Quit", true, None);
 
+    let styles_menu = Submenu::new("Style", true);
+    let style_items: StyleItems = WidgetStyle::ALL
+        .into_iter()
+        .map(|s| (s, CheckMenuItem::new(s.label(), true, s == style, None)))
+        .collect();
+    for (_, item) in &style_items {
+        styles_menu.append(item).ok()?;
+    }
+
     let menu = Menu::new();
     menu.append(&toggle).ok()?;
     menu.append(&refresh).ok()?;
     menu.append(&PredefinedMenuItem::separator()).ok()?;
+    menu.append(&styles_menu).ok()?;
     menu.append(&reload).ok()?;
     menu.append(&PredefinedMenuItem::separator()).ok()?;
     menu.append(&quit).ok()?;
 
-    Some((
-        menu,
-        MenuIds {
-            toggle: toggle.id().clone(),
-            refresh: refresh.id().clone(),
-            reload: reload.id().clone(),
-            quit: quit.id().clone(),
-        },
-    ))
+    let ids = MenuIds {
+        toggle: toggle.id().clone(),
+        refresh: refresh.id().clone(),
+        reload: reload.id().clone(),
+        quit: quit.id().clone(),
+        styles: style_items
+            .iter()
+            .map(|(s, item)| (*s, item.id().clone()))
+            .collect(),
+    };
+
+    Some((menu, ids, style_items))
+}
+
+/// Leaves exactly one item checked. Called after every pick, including a re-pick of
+/// the face already in use, which a check item would otherwise untick itself.
+fn check_only(items: &StyleItems, style: WidgetStyle) {
+    for (candidate, item) in items {
+        item.set_checked(*candidate == style);
+    }
 }
 
 fn build_tray(menu: Menu) -> tray_icon::Result<TrayIcon> {

@@ -140,6 +140,76 @@ pub struct OfficialUsage {
     pub weekly: Option<UsageWindow>,
 }
 
+/// Which face the mini widget wears. Picked from the tray's *Style* submenu and
+/// remembered in `config.json`; each one declares its own window size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WidgetStyle {
+    /// Two concentric rings — the original face, and still the default.
+    #[default]
+    Rings,
+    /// Two labelled horizontal bars.
+    Bars,
+    /// One short row: a small dial, the session percent, and the time left.
+    Pill,
+    /// The session percent alone, in a small square.
+    Minimal,
+    /// A single line of text, no graphics.
+    Text,
+}
+
+impl WidgetStyle {
+    /// Every style, in the order the tray menu lists them.
+    pub const ALL: [WidgetStyle; 5] = [
+        WidgetStyle::Rings,
+        WidgetStyle::Bars,
+        WidgetStyle::Pill,
+        WidgetStyle::Minimal,
+        WidgetStyle::Text,
+    ];
+
+    /// The value written to `config.json`.
+    pub fn key(self) -> &'static str {
+        match self {
+            WidgetStyle::Rings => "rings",
+            WidgetStyle::Bars => "bars",
+            WidgetStyle::Pill => "pill",
+            WidgetStyle::Minimal => "minimal",
+            WidgetStyle::Text => "text",
+        }
+    }
+
+    /// How the tray menu names it.
+    pub fn label(self) -> &'static str {
+        match self {
+            WidgetStyle::Rings => "Rings (default)",
+            WidgetStyle::Bars => "Bars",
+            WidgetStyle::Pill => "Pill",
+            WidgetStyle::Minimal => "Minimal",
+            WidgetStyle::Text => "Text",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.key() == key)
+    }
+}
+
+impl Serialize for WidgetStyle {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.key())
+    }
+}
+
+impl<'de> Deserialize<'de> for WidgetStyle {
+    /// An unrecognised name falls back to the default rather than failing the parse.
+    /// `config.json` is hand-editable, and one mistyped style should not make the
+    /// whole file unreadable — which would freeze every other setting too.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let key = String::deserialize(deserializer)?;
+        Ok(Self::from_key(&key).unwrap_or_default())
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -200,6 +270,10 @@ pub struct AppConfig {
     /// Whether the widget was visible when the app last closed.
     #[serde(default = "default_true")]
     pub widget_visible: bool,
+
+    /// The widget's face. Set it from the tray's *Style* submenu, or by hand:
+    /// `rings`, `bars`, `pill`, `minimal`, `text`.
+    pub style: WidgetStyle,
 }
 
 impl Default for AppConfig {
@@ -213,6 +287,7 @@ impl Default for AppConfig {
             widget_left: None,
             widget_top: None,
             widget_visible: true,
+            style: WidgetStyle::default(),
         }
     }
 }
