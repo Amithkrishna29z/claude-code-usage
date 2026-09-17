@@ -188,7 +188,8 @@ impl eframe::App for WidgetApp {
         // The tray needs the main thread, which is where update() runs.
         if !self.tray_attempted {
             self.tray_attempted = true;
-            self.tray = Tray::new(self.config.style);
+            let waker = ctx.clone();
+            self.tray = Tray::new(self.config.style, move || waker.request_repaint());
             if self.tray.is_none() {
                 eprintln!("usage: no system tray available; widget runs standalone.");
             }
@@ -201,16 +202,17 @@ impl eframe::App for WidgetApp {
             self.snapshot = latest;
         }
 
-        match self.tray.as_ref().and_then(Tray::poll) {
-            Some(TrayCommand::ToggleWidget) => self.toggle_widget(ctx),
-            Some(TrayCommand::Refresh) => self.monitor.refresh_now(),
-            Some(TrayCommand::ReloadSettings) => self.reload_settings(),
-            Some(TrayCommand::SetStyle(style)) => self.set_style(style),
-            Some(TrayCommand::Quit) => {
-                self.persist();
-                ctx.send_viewport_cmd(ViewportCommand::Close);
+        while let Some(command) = self.tray.as_ref().and_then(Tray::poll) {
+            match command {
+                TrayCommand::ToggleWidget => self.toggle_widget(ctx),
+                TrayCommand::Refresh => self.monitor.refresh_now(),
+                TrayCommand::ReloadSettings => self.reload_settings(),
+                TrayCommand::SetStyle(style) => self.set_style(style),
+                TrayCommand::Quit => {
+                    self.persist();
+                    ctx.send_viewport_cmd(ViewportCommand::Close);
+                }
             }
-            None => {}
         }
 
         if self.config.style != self.applied_style {
@@ -226,9 +228,12 @@ impl eframe::App for WidgetApp {
             self.draw_card(ctx, now);
         }
 
-        // Keep relative times live, and keep polling the tray even while the window
-        // is hidden — without this the menu would stop responding once hidden.
-        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        // Keep relative times live while the window is hidden as well as shown. One
+        // second is as fine as the countdown is ever displayed, and this is only the
+        // idle ceiling: pointer input repaints immediately, so dragging stays smooth,
+        // and tray clicks wake the loop through the handler installed with the icon
+        // rather than waiting for a tick to come round.
+        ctx.request_repaint_after(std::time::Duration::from_secs(1));
     }
 }
 
