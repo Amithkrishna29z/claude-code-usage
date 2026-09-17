@@ -176,9 +176,12 @@ pub struct AppConfig {
     #[serde(default = "default_window_hours")]
     pub window_hours: f64,
 
-    /// How often to re-fetch the official figures, in seconds.
+    /// How often to re-fetch the official figures while nothing is happening, in
+    /// seconds. This is the idle ceiling, not the usual wait: once Claude Code writes
+    /// to its logs — or you pick Refresh in the tray — the next fetch goes out as soon
+    /// as the 60-second floor below allows, whatever this is set to.
     ///
-    /// Clamped to a 60-second floor at use: the endpoint answers `429` with a
+    /// Clamped to that 60-second floor at use: the endpoint answers `429` with a
     /// `Retry-After` of a few minutes, and polling harder just gets the app banned
     /// into its local-estimate fallback, which is strictly worse than a slightly
     /// stale official number. The displayed countdown ticks every second regardless
