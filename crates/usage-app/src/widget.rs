@@ -132,6 +132,15 @@ impl WidgetApp {
     /// Switches the card's face. Persisted immediately, so the choice survives a
     /// restart the same way the position does; the resize happens in `update()`.
     fn set_style(&mut self, style: WidgetStyle) {
+        // Re-tick the group on every pick, before anything else decides there is
+        // nothing to do. A check item toggles itself when clicked, so the menu is
+        // briefly wrong no matter which item was hit: two ticked when the pick is a
+        // change, none at all when it is the style already in use. Neither corrects
+        // itself, because the early return below never reaches the menu.
+        if let Some(tray) = self.tray.as_ref() {
+            tray.set_style(style);
+        }
+
         if self.config.style == style {
             return;
         }
