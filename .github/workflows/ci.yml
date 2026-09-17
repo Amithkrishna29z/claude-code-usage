@@ -68,10 +68,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # The core crate holds all the logic and is headless, so its tests run
-      # everywhere. The GUI crate is only built, since CI has no display server.
-      - name: Test core
-        run: cargo test -p usage-core --all-features
+      # Unit tests across both crates. Nothing here opens a window, so they run
+      # fine without a display server; the GUI itself is only built.
+      - name: Test
+        run: cargo test --workspace --all-features
 
       - name: Build app
         run: cargo build --workspace

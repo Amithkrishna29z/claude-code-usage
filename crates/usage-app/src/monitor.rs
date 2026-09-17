@@ -16,15 +16,17 @@ use usage_core::models::{OfficialUsage, UsageSnapshot, UsageSource, UsageState};
 use usage_core::{calculator, oauth::OAuthUsageClient, reader, AppConfig};
 
 /// The usage endpoint rate-limits hard, and log writes can fire a refresh every
-/// couple of seconds, so the official figures are cached: fetched at most this often,
-/// and kept serving for [`CACHE_TTL`] after a failure so one blip does not flip the
-/// widget over to the local estimate. Five minutes is ample resolution for a 5-hour
-/// and a 7-day window.
-const MIN_FETCH_INTERVAL: i64 = 300;
+/// couple of seconds, so the official figures are cached: fetched at most once per
+/// `refresh_seconds`, and kept serving for [`CACHE_TTL`] after a failure so one blip
+/// does not flip the widget over to the local estimate.
+/// Floor on `refresh_seconds`. Below this the endpoint starts answering 429, which
+/// drops the widget to its local estimate — worse than a slightly stale real number.
+const MIN_FETCH_INTERVAL: i64 = 60;
 const CACHE_TTL: i64 = 900;
 
-/// Safety net when no file events arrive.
-const POLL_INTERVAL: StdDuration = StdDuration::from_secs(60);
+/// How often the worker wakes to re-evaluate. Kept below the smallest allowed
+/// `refresh_seconds` so a short interval is actually honoured, not rounded up.
+const POLL_INTERVAL: StdDuration = StdDuration::from_secs(15);
 /// Coalesce a burst of log writes into a single refresh.
 const DEBOUNCE: StdDuration = StdDuration::from_millis(1500);
 
@@ -206,10 +208,11 @@ fn official_usage(
     cache: &mut Option<(OfficialUsage, DateTime<Utc>)>,
     now: DateTime<Utc>,
 ) -> Option<OfficialUsage> {
+    let interval = Duration::seconds((config.refresh_seconds as i64).max(MIN_FETCH_INTERVAL));
     let age = cache.as_ref().map(|(_, at)| now - *at);
 
     if let (Some(age), Some((cached, _))) = (age, cache.as_ref()) {
-        if age < Duration::seconds(MIN_FETCH_INTERVAL) {
+        if age < interval {
             return Some(cached.clone());
         }
     }

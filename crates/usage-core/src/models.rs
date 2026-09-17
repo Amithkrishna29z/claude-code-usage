@@ -152,6 +152,10 @@ fn default_window_hours() -> f64 {
     5.0
 }
 
+fn default_refresh_seconds() -> u64 {
+    300
+}
+
 /// User configuration, persisted as JSON in the platform config directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -172,6 +176,16 @@ pub struct AppConfig {
     #[serde(default = "default_window_hours")]
     pub window_hours: f64,
 
+    /// How often to re-fetch the official figures, in seconds.
+    ///
+    /// Clamped to a 60-second floor at use: the endpoint answers `429` with a
+    /// `Retry-After` of a few minutes, and polling harder just gets the app banned
+    /// into its local-estimate fallback, which is strictly worse than a slightly
+    /// stale official number. The displayed countdown ticks every second regardless
+    /// of this value.
+    #[serde(default = "default_refresh_seconds")]
+    pub refresh_seconds: u64,
+
     /// Root Claude directory. Logs are read from `{claude_dir}/projects/**/*.jsonl`.
     /// Empty means "use the default" (`~/.claude`).
     pub claude_dir: String,
@@ -191,6 +205,7 @@ impl Default for AppConfig {
             use_official_usage: true,
             token_limit: default_token_limit(),
             window_hours: default_window_hours(),
+            refresh_seconds: default_refresh_seconds(),
             claude_dir: String::new(),
             widget_left: None,
             widget_top: None,

@@ -156,7 +156,7 @@ impl eframe::App for WidgetApp {
 
         // Keep relative times live, and keep polling the tray even while the window
         // is hidden — without this the menu would stop responding once hidden.
-        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
     }
 }
 

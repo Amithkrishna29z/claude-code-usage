@@ -62,18 +62,27 @@ pub fn format_percent(window: Option<UsageWindow>) -> String {
     }
 }
 
-/// "1h 47m", "12m", or "0m".
+/// "1h 47m", "12m 34s", or "45s".
+///
+/// Seconds appear under an hour so the countdown visibly ticks: the official
+/// percentages can only refresh every few minutes, and a display that never moves
+/// reads as frozen even when the app is working perfectly.
 pub fn format_duration(span: Option<Duration>) -> String {
-    match span {
-        None => "—".to_owned(),
-        Some(d) => {
-            let hours = d.num_hours();
-            if hours >= 1 {
-                format!("{}h {}m", hours, d.num_minutes() - hours * 60)
-            } else {
-                format!("{}m", d.num_minutes().max(0))
-            }
-        }
+    let Some(d) = span else {
+        return "—".to_owned();
+    };
+
+    let total = d.num_seconds().max(0);
+    let hours = total / 3600;
+    let minutes = (total % 3600) / 60;
+    let seconds = total % 60;
+
+    if hours >= 1 {
+        format!("{hours}h {minutes}m")
+    } else if minutes >= 1 {
+        format!("{minutes}m {seconds}s")
+    } else {
+        format!("{seconds}s")
     }
 }
 
@@ -191,5 +200,48 @@ fn state_caption_verbose(s: &UsageSnapshot) -> &'static str {
         UsageState::NoActiveSession => "no active session",
         UsageState::NoData => "no data yet",
         UsageState::NoLogsFound => "no .claude logs found",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duration_shows_seconds_under_an_hour_so_it_visibly_ticks() {
+        assert_eq!(format_duration(Some(Duration::seconds(45))), "45s");
+        assert_eq!(format_duration(Some(Duration::seconds(94))), "1m 34s");
+        assert_eq!(format_duration(Some(Duration::minutes(12))), "12m 0s");
+    }
+
+    #[test]
+    fn duration_drops_seconds_once_hours_are_involved() {
+        assert_eq!(format_duration(Some(Duration::minutes(107))), "1h 47m");
+        assert_eq!(format_duration(Some(Duration::hours(2))), "2h 0m");
+    }
+
+    #[test]
+    fn duration_never_renders_negative_time() {
+        assert_eq!(format_duration(Some(Duration::seconds(-30))), "0s");
+        assert_eq!(format_duration(None), "—");
+    }
+
+    #[test]
+    fn tokens_are_compact() {
+        assert_eq!(format_tokens(950), "950");
+        assert_eq!(format_tokens(8_300), "8.3k");
+        assert_eq!(format_tokens(20_000_000), "20M");
+        assert_eq!(format_tokens(16_081_234), "16.08M");
+    }
+
+    #[test]
+    fn thresholds_follow_the_traffic_light() {
+        let at = |u| Some(UsageWindow::new(u, None));
+        assert_eq!(color_for(at(0.69)), GREEN);
+        assert_eq!(color_for(at(0.70)), ORANGE);
+        assert_eq!(color_for(at(0.89)), ORANGE);
+        assert_eq!(color_for(at(0.90)), RED);
+        assert_eq!(color_for(at(1.50)), RED);
+        assert_eq!(color_for(None), GREY);
     }
 }

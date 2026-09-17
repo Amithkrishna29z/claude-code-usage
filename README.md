@@ -278,6 +278,7 @@ Settings are a JSON file, edited by hand. Its location follows platform conventi
   "use_official_usage": true,
   "token_limit": 20000000,
   "window_hours": 5.0,
+  "refresh_seconds": 300,
   "claude_dir": "",
   "widget_left": 1144.0,
   "widget_top": 602.0,
@@ -290,6 +291,7 @@ Settings are a JSON file, edited by hand. Its location follows platform conventi
 | `use_official_usage` | Fetch real percentages from Anthropic. `false` = fully offline. | `true` |
 | `token_limit` | Per-window token budget for the *fallback estimate only*. | `20000000` (placeholder) |
 | `window_hours` | Length of the rolling window used by the fallback. | `5.0` |
+| `refresh_seconds` | How often the official figures are re-fetched. Floored at 60 — see below. | `300` |
 | `claude_dir` | Root containing `projects/` and `.credentials.json`. Empty = `~/.claude`. | `""` |
 | `widget_left` / `widget_top` | Remembered position; managed by the app. | unset |
 | `widget_visible` | Whether the widget was showing at exit. | `true` |
@@ -297,6 +299,18 @@ Settings are a JSON file, edited by hand. Its location follows platform conventi
 Unknown keys are ignored and missing keys fall back to defaults, so the file survives
 version changes in both directions. After editing, pick **Reload settings** from the
 tray menu — no restart needed.
+
+### How often it refreshes
+The countdown on the widget ticks **every second**, and the local estimate updates
+within ~1.5s of Claude Code writing a log line.
+
+The official percentages are another matter: that endpoint answers `429` with a
+`Retry-After` of a few minutes, so `refresh_seconds` is floored at **60** no matter
+what you set. Polling harder does not get fresher numbers — it gets you rate-limited
+into the local estimate, which is strictly worse than a slightly stale real figure.
+The default of 300 is comfortable; 60 is the floor if you want it tighter. A 5-hour
+and a 7-day window simply do not move fast enough for second-by-second polling to
+tell you anything.
 
 ### Calibrating `token_limit`
 This matters only when the official figures are unavailable. Anthropic does not
