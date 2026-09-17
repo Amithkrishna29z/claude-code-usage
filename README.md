@@ -118,8 +118,13 @@ chmod +x claude-usage-linux-x86_64
 
 The tray icon needs a StatusNotifier host: Cinnamon, MATE, Xfce and KDE Plasma all
 provide one, as does GNOME with the AppIndicator extension; a bare GNOME Shell shows no
-icon, in which case the widget itself is still usable. Under Wayland the widget's
-always-on-top and remembered position depend on the compositor.
+icon, in which case the widget itself is still usable.
+
+Wayland has no always-on-top and ignores window positioning, so on a Wayland session
+the widget starts through **XWayland** instead — that is what keeps it above the app
+you switch to and returns it to where you left it. It happens automatically when
+`DISPLAY` is set alongside `WAYLAND_DISPLAY`, which is the normal case; set
+`CLAUDE_USAGE_BACKEND=wayland` to run natively on Wayland and give that up.
 
 Two tray behaviours differ here, because the appindicator protocol has no equivalent:
 **left-click does not toggle the widget** — use the menu's *Show/hide widget* — and the
