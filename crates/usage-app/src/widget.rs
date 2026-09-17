@@ -1,17 +1,17 @@
-//! The always-on-top mini widget: two concentric rings, the session percent, and one
-//! compact line. Everything else (both reset times, the data source, freshness)
-//! lives in the hover tooltip, so the resting state stays quiet without losing
-//! information.
+//! The always-on-top mini widget: the card, its window, and the two glyphs in its top
+//! corners. What the card actually shows is a [`crate::styles`] face, chosen from the
+//! tray. Everything the face leaves out (both reset times, the data source,
+//! freshness) lives in the hover tooltip, so the resting state stays quiet without
+//! losing information.
 
-use chrono::{Duration, Utc};
-use eframe::egui::{self, Color32, FontId, Pos2, Sense, Stroke, Vec2, ViewportCommand};
-use usage_core::{AppConfig, ConfigService, UsageSnapshot, UsageState};
+use chrono::Utc;
+use eframe::egui::{self, Color32, Sense, Stroke, Vec2, ViewportCommand};
+use usage_core::{AppConfig, ConfigService, UsageSnapshot, UsageState, WidgetStyle};
 
 use crate::monitor::UsageMonitor;
+use crate::styles;
 use crate::tray::{Tray, TrayCommand};
 use crate::visuals;
-
-pub const WIDGET_SIZE: Vec2 = Vec2::new(122.0, 142.0);
 
 /// Where the widget parks when "hidden".
 ///
@@ -25,14 +25,32 @@ pub const PARKED: egui::Pos2 = egui::pos2(-32000.0, -32000.0);
 /// Fallback placement when showing a widget that has no remembered position.
 const DEFAULT_POSITION: egui::Pos2 = egui::pos2(100.0, 100.0);
 
-/// How long without new Claude activity before the widget shows "stale".
-const STALE_AFTER_MINUTES: i64 = 10;
+/// A reported position at or beyond this is the park, not somewhere the user put the
+/// window, and must never be remembered as one.
+///
+/// It is a threshold rather than a comparison against [`PARKED`] itself because that
+/// value does not survive the round trip. The move is requested in logical points,
+/// Windows clamps the physical result to `i16::MIN`, and egui reads it back divided by
+/// the scale factor — so on a 150% display the park reports as -21845, nowhere near
+/// the -32000 that was asked for. Matching the sentinel exactly meant the park was
+/// saved as the remembered position, and the widget could never be shown again.
+const OFF_SCREEN: f32 = -10_000.0;
 
-/// Ring geometry. Outer is the 7-day weekly window, inner the 5-hour session.
-const OUTER_RADIUS: f32 = 46.0;
-const OUTER_WIDTH: f32 = 8.0;
-const INNER_RADIUS: f32 = 34.0;
-const INNER_WIDTH: f32 = 5.5;
+/// Edge length of the minimise/close hit areas in the card's top corners. Small
+/// enough to sit in the gap between the outer ring and the card's corner.
+const CORNER_BUTTON: f32 = 14.0;
+
+/// Cards shorter than this are a single row, so the corner glyphs centre themselves
+/// against that row instead of hugging the top edge.
+const SHORT_CARD: f32 = 60.0;
+
+/// The two buttons in the card's top corners. Minimise parks the widget, which the
+/// tray icon brings back; close quits the app outright.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CornerButton {
+    Minimise,
+    Close,
+}
 
 pub struct WidgetApp {
     config: AppConfig,
@@ -43,11 +61,17 @@ pub struct WidgetApp {
     tray: Option<Tray>,
     tray_attempted: bool,
     visible: bool,
+    /// The face the window is currently sized for. `config.style` is the wish;
+    /// this is what has actually been applied, so a change from any source — the
+    /// tray menu, a hand-edited config.json — is noticed in one place.
+    applied_style: WidgetStyle,
 }
 
 impl WidgetApp {
     pub fn new(config: AppConfig, config_service: ConfigService, monitor: UsageMonitor) -> Self {
         let visible = config.widget_visible;
+        // main() built the window at this style's size, so it is already applied.
+        let config_style = config.style;
         Self {
             snapshot: UsageSnapshot::empty(UsageState::NoData, config.token_limit, Utc::now()),
             config,
@@ -56,6 +80,7 @@ impl WidgetApp {
             tray: None,
             tray_attempted: false,
             visible,
+            applied_style: config_style,
         }
     }
 
@@ -78,6 +103,8 @@ impl WidgetApp {
         reloaded.widget_left = self.config.widget_left;
         reloaded.widget_top = self.config.widget_top;
         reloaded.widget_visible = self.config.widget_visible;
+        // The style is deliberately NOT carried over: re-reading the file is how a
+        // hand-edited style takes effect, and update() resizes the window to match.
         self.config = reloaded;
         self.monitor.reconfigure(self.config.clone());
     }
@@ -102,6 +129,37 @@ impl WidgetApp {
         self.persist();
     }
 
+    /// Switches the card's face. Persisted immediately, so the choice survives a
+    /// restart the same way the position does; the resize happens in `update()`.
+    fn set_style(&mut self, style: WidgetStyle) {
+        if self.config.style == style {
+            return;
+        }
+        self.config.style = style;
+        self.persist();
+    }
+
+    /// Resizes the window to the current face and tells the tray which item to tick.
+    ///
+    /// The viewport was built with its minimum and maximum inner size pinned together
+    /// to keep the card unresizable, so the pair has to be relaxed before the new size
+    /// will take, then pinned again around it.
+    fn apply_style(&mut self, ctx: &egui::Context) {
+        let style = self.config.style;
+        self.applied_style = style;
+
+        let size = styles::size_of(style);
+        ctx.send_viewport_cmd(ViewportCommand::MinInnerSize(Vec2::ZERO));
+        ctx.send_viewport_cmd(ViewportCommand::MaxInnerSize(Vec2::INFINITY));
+        ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
+        ctx.send_viewport_cmd(ViewportCommand::MinInnerSize(size));
+        ctx.send_viewport_cmd(ViewportCommand::MaxInnerSize(size));
+
+        if let Some(tray) = self.tray.as_ref() {
+            tray.set_style(style);
+        }
+    }
+
     fn shown_position(&self) -> egui::Pos2 {
         match (self.config.widget_left, self.config.widget_top) {
             (Some(x), Some(y)) => egui::pos2(x, y),
@@ -121,7 +179,7 @@ impl eframe::App for WidgetApp {
         // The tray needs the main thread, which is where update() runs.
         if !self.tray_attempted {
             self.tray_attempted = true;
-            self.tray = Tray::new();
+            self.tray = Tray::new(self.config.style);
             if self.tray.is_none() {
                 eprintln!("usage: no system tray available; widget runs standalone.");
             }
@@ -138,11 +196,16 @@ impl eframe::App for WidgetApp {
             Some(TrayCommand::ToggleWidget) => self.toggle_widget(ctx),
             Some(TrayCommand::Refresh) => self.monitor.refresh_now(),
             Some(TrayCommand::ReloadSettings) => self.reload_settings(),
+            Some(TrayCommand::SetStyle(style)) => self.set_style(style),
             Some(TrayCommand::Quit) => {
                 self.persist();
                 ctx.send_viewport_cmd(ViewportCommand::Close);
             }
             None => {}
+        }
+
+        if self.config.style != self.applied_style {
+            self.apply_style(ctx);
         }
 
         let now = Utc::now();
@@ -171,141 +234,49 @@ impl WidgetApp {
             .corner_radius(10.0)
             .inner_margin(egui::Margin::symmetric(7, 6));
 
-        egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-            let response =
-                ui.interact(ui.max_rect(), ui.id().with("drag"), Sense::click_and_drag());
-            if response.drag_started() {
-                ctx.send_viewport_cmd(ViewportCommand::StartDrag);
-            }
+        let pressed = egui::CentralPanel::default()
+            .frame(frame)
+            .show(ctx, |ui| {
+                let card = ui.max_rect();
+                let (minimise_rect, close_rect) = corner_rects(card);
 
-            ui.vertical_centered(|ui| {
-                self.draw_rings(ui, now);
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(self.compact_line(now))
-                        .size(9.0)
-                        .color(Color32::from_rgba_unmultiplied(255, 255, 255, 0xAA)),
-                );
-            });
-        });
+                let response = ui.interact(card, ui.id().with("drag"), Sense::click_and_drag());
+                // A press that begins on a corner button belongs to that button:
+                // without this the card would slide out from under a click meant to
+                // close it.
+                let from_corner = response
+                    .interact_pointer_pos()
+                    .is_some_and(|pos| minimise_rect.contains(pos) || close_rect.contains(pos));
+                if response.drag_started() && !from_corner {
+                    ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+                }
+
+                styles::draw(self.config.style, ui, &self.snapshot, now);
+
+                // Added last so they take the click ahead of the drag surface below.
+                let minimise = corner_button(ui, minimise_rect, CornerButton::Minimise).clicked();
+                let close = corner_button(ui, close_rect, CornerButton::Close).clicked();
+
+                if close {
+                    Some(CornerButton::Close)
+                } else if minimise {
+                    Some(CornerButton::Minimise)
+                } else {
+                    None
+                }
+            })
+            .inner;
+
+        match pressed {
+            Some(CornerButton::Minimise) => self.set_visible(ctx, false),
+            Some(CornerButton::Close) => {
+                self.persist();
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
+            None => {}
+        }
 
         self.remember_position(ctx);
-    }
-
-    fn draw_rings(&self, ui: &mut egui::Ui, now: chrono::DateTime<Utc>) {
-        let (rect, _) = ui.allocate_exact_size(Vec2::splat(102.0), Sense::hover());
-        let painter = ui.painter();
-        let centre = rect.center();
-
-        let live = matches!(
-            self.snapshot.state,
-            UsageState::Ok | UsageState::NoActiveSession
-        );
-
-        let session_color = if live {
-            rgb(visuals::color_for(self.snapshot.session))
-        } else {
-            rgb(visuals::GREY)
-        };
-
-        // Outer ring: the 7-day weekly window.
-        arc(
-            painter,
-            centre,
-            OUTER_RADIUS,
-            OUTER_WIDTH,
-            1.0,
-            track_color(),
-        );
-        if let Some(weekly) = self.snapshot.weekly {
-            arc(
-                painter,
-                centre,
-                OUTER_RADIUS,
-                OUTER_WIDTH,
-                weekly.utilization,
-                rgb(visuals::color_for(Some(weekly))),
-            );
-        }
-
-        // Inner ring: the 5-hour session window, sitting next to the percent in the
-        // centre that reports the same number.
-        arc(
-            painter,
-            centre,
-            INNER_RADIUS,
-            INNER_WIDTH,
-            1.0,
-            track_color(),
-        );
-        if live {
-            let fraction = self.snapshot.session.map(|w| w.utilization).unwrap_or(0.0);
-            arc(
-                painter,
-                centre,
-                INNER_RADIUS,
-                INNER_WIDTH,
-                fraction,
-                session_color,
-            );
-        }
-
-        // Centre: the session number, because that is the one that bites first.
-        let percent = if live {
-            visuals::format_percent(self.snapshot.session)
-        } else {
-            "—".to_owned()
-        };
-        painter.text(
-            centre - Vec2::new(0.0, 5.0),
-            egui::Align2::CENTER_CENTER,
-            percent,
-            FontId::proportional(22.0),
-            Color32::WHITE,
-        );
-
-        let caption = self.caption(now);
-        if !caption.is_empty() {
-            painter.text(
-                centre + Vec2::new(0.0, 13.0),
-                egui::Align2::CENTER_CENTER,
-                caption,
-                FontId::proportional(8.0),
-                Color32::from_rgba_unmultiplied(255, 255, 255, 0x99),
-            );
-        }
-    }
-
-    /// The caption under the percent. Blank when everything is healthy and official —
-    /// a minimal face should say nothing when there is nothing to flag.
-    fn caption(&self, now: chrono::DateTime<Utc>) -> String {
-        if self.snapshot.state == UsageState::Ok {
-            if let Some(last) = self.snapshot.last_activity {
-                if now - last > Duration::minutes(STALE_AFTER_MINUTES) {
-                    return "stale".to_owned();
-                }
-            }
-        }
-        visuals::state_caption(&self.snapshot).to_owned()
-    }
-
-    /// The one visible line under the ring: the weekly figure the centre cannot show,
-    /// and how long the session window has left. Either half is dropped when unknown
-    /// rather than rendered as a dash.
-    fn compact_line(&self, now: chrono::DateTime<Utc>) -> String {
-        let mut parts: Vec<String> = Vec::with_capacity(2);
-
-        if let Some(weekly) = self.snapshot.weekly {
-            parts.push(format!("wk {}", visuals::format_percent(Some(weekly))));
-        }
-        if self.snapshot.reset_at().is_some() {
-            parts.push(format!(
-                "{} left",
-                visuals::format_duration(self.snapshot.time_until_reset(now))
-            ));
-        }
-
-        parts.join("  ·  ")
     }
 
     /// Records the window position after a drag so it comes back where it was left.
@@ -320,7 +291,7 @@ impl WidgetApp {
             return;
         };
         let (left, top) = (outer.min.x, outer.min.y);
-        if left <= PARKED.x + 1.0 || top <= PARKED.y + 1.0 {
+        if left <= OFF_SCREEN || top <= OFF_SCREEN {
             return;
         }
 
@@ -335,51 +306,60 @@ impl WidgetApp {
     }
 }
 
-fn rgb(color: [u8; 3]) -> Color32 {
-    Color32::from_rgb(color[0], color[1], color[2])
+/// The two glyph hit areas. They hug the top corners of a tall card; on a one-row
+/// card there is no "top corner" to speak of, so they centre against the row instead.
+fn corner_rects(card: egui::Rect) -> (egui::Rect, egui::Rect) {
+    let top = if card.height() < SHORT_CARD {
+        card.center().y - CORNER_BUTTON / 2.0
+    } else {
+        card.top()
+    };
+    let size = Vec2::splat(CORNER_BUTTON);
+    (
+        egui::Rect::from_min_size(egui::pos2(card.left(), top), size),
+        egui::Rect::from_min_size(egui::pos2(card.right() - CORNER_BUTTON, top), size),
+    )
 }
 
-fn track_color() -> Color32 {
-    Color32::from_rgba_unmultiplied(255, 255, 255, 0x26)
-}
+/// A quiet glyph in a card corner — a dash to minimise, a cross to close — that
+/// lights up on hover so the resting card stays as plain as the rest of the face.
+fn corner_button(ui: &mut egui::Ui, rect: egui::Rect, kind: CornerButton) -> egui::Response {
+    let id = ui.id().with(match kind {
+        CornerButton::Minimise => "minimise",
+        CornerButton::Close => "close",
+    });
+    let response = ui.interact(rect, id, Sense::click());
 
-/// Draws a clockwise arc from 12 o'clock as a run of short line segments with round
-/// joins, which is how egui's painter handles stroked curves.
-fn arc(
-    painter: &egui::Painter,
-    centre: Pos2,
-    radius: f32,
-    width: f32,
-    fraction: f64,
-    color: Color32,
-) {
-    let fraction = fraction.clamp(0.0, 1.0) as f32;
-    if fraction <= 0.0 {
-        return;
-    }
+    let color = match (kind, response.hovered()) {
+        (_, false) => Color32::from_rgba_unmultiplied(255, 255, 255, 0x66),
+        (CornerButton::Minimise, true) => Color32::WHITE,
+        (CornerButton::Close, true) => styles::rgb(visuals::RED),
+    };
+    let stroke = Stroke::new(1.2_f32, color);
+    let centre = rect.center();
+    let arm = 3.0;
 
-    let sweep = fraction * std::f32::consts::TAU;
-    // Enough segments that the curve reads as smooth at this radius.
-    let steps = ((sweep * radius / 2.0).ceil() as usize).clamp(8, 180);
-
-    let points: Vec<Pos2> = (0..=steps)
-        .map(|i| {
-            let angle = sweep * (i as f32 / steps as f32);
-            centre + Vec2::new(angle.sin() * radius, -angle.cos() * radius)
-        })
-        .collect();
-
-    painter.add(egui::Shape::line(points.clone(), Stroke::new(width, color)));
-
-    // egui strokes polylines with butt ends; discs at the tips give the round caps
-    // the design calls for. Skipped on a full circle, where the ends meet anyway.
-    if fraction < 1.0 {
-        let cap = width / 2.0;
-        if let (Some(first), Some(last)) = (points.first(), points.last()) {
-            painter.circle_filled(*first, cap, color);
-            painter.circle_filled(*last, cap, color);
+    let painter = ui.painter();
+    match kind {
+        CornerButton::Minimise => {
+            painter.line_segment(
+                [centre - Vec2::new(arm, 0.0), centre + Vec2::new(arm, 0.0)],
+                stroke,
+            );
+        }
+        CornerButton::Close => {
+            painter.line_segment(
+                [centre - Vec2::splat(arm), centre + Vec2::splat(arm)],
+                stroke,
+            );
+            painter.line_segment(
+                [centre + Vec2::new(-arm, arm), centre + Vec2::new(arm, -arm)],
+                stroke,
+            );
         }
     }
+
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Where the window should be created. A widget that was hidden last time starts

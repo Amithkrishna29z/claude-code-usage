@@ -17,3 +17,7 @@ usage-core = { version = "0.2.0", path = "../usage-core" }
 # on its own thread. Same version tray-icon pulls in, so nothing new is built.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+# Forcing the X11/XWayland backend needs winit's own builder extension trait, which
+# eframe does not re-export. Same version eframe already pulls in, so nothing new is
+# built.
+winit = { version = "0.30", default-features = false, features = ["x11"] }

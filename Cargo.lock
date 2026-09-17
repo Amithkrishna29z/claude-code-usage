@@ -3939,6 +3939,7 @@ dependencies = [
  "notify",
  "tray-icon",
  "usage-core",
+ "winit",
 ]
 
 [[package]]

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use usage_core::models::{UsageEvent, UsageState};
-use usage_core::{calculator, config::ConfigService, oauth, parser, reader};
+use usage_core::{calculator, config::ConfigService, oauth, parser, reader, WidgetStyle};
 
 fn utc(text: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(text)
@@ -436,6 +436,31 @@ fn config_with_a_utf8_bom_still_loads() {
     assert_eq!(loaded.token_limit, 777);
     assert!(!loaded.use_official_usage);
     assert!(service.is_readable());
+}
+
+#[test]
+fn style_round_trips_and_survives_a_typo() {
+    let temp = TempDir::new("style");
+    let service = ConfigService::with_dir(temp.path());
+
+    assert_eq!(service.load().style, WidgetStyle::Rings);
+
+    let mut config = service.load();
+    config.style = WidgetStyle::Pill;
+    config.token_limit = 4321;
+    service.save(&config).unwrap();
+    assert_eq!(service.load().style, WidgetStyle::Pill);
+
+    // A mistyped style must not take the rest of the file down with it: the style
+    // falls back to the default and every other setting is still honoured.
+    std::fs::write(
+        service.config_path(),
+        r#"{"style": "sparkles", "token_limit": 777}"#,
+    )
+    .unwrap();
+    assert!(service.is_readable());
+    assert_eq!(service.load().style, WidgetStyle::Rings);
+    assert_eq!(service.load().token_limit, 777);
 }
 
 #[test]

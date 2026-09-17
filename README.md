@@ -15,14 +15,28 @@ local Claude Code session logs.
 
 **Mini widget** (always-on-top, frameless, draggable) — deliberately minimal:
 
-- **Concentric rings**: outer = 7-day weekly, inner = 5-hour session. Each is coloured
-  independently: **green < 70%**, **orange 70–90%**, **red > 90%**.
-- The session percent in the centre, since that is the limit that usually bites first.
-- One line beneath: `wk 54%  ·  2h 20m left`.
+- **Five faces** to pick from, in the tray's **Style** submenu. The window resizes to
+  whichever one you choose, and the choice is remembered between runs:
+
+  | Style | Shows | Size |
+  |---|---|---|
+  | **Rings** (default) | Two concentric rings, session percent in the centre, one line beneath | 122×142 |
+  | **Bars** | Two labelled horizontal bars with the time left underneath | 172×88 |
+  | **Pill** | One row: a small dial, the session percent, the time left | 176×40 |
+  | **Minimal** | The session percent alone, in its traffic-light colour | 78×78 |
+  | **Text** | A single centred line, no graphics | 212×32 |
+
+- Every face uses the same colours: each window is coloured independently,
+  **green < 70%**, **orange 70–90%**, **red > 90%**.
+- On the rings: outer = 7-day weekly, inner = 5-hour session, with the session percent
+  in the centre since that is the limit that usually bites first, and one line beneath
+  (`wk 54%  ·  2h 20m left`).
 - A caption appears under the percent only when something needs flagging — `est.` on
   the local fallback, `stale` after 10 minutes of no activity. It stays blank when the
   numbers are official and current.
 - Remembers its position between runs.
+- **Top corners**: a dash on the left minimises it (the tray icon brings it back), a
+  cross on the right quits the app. Both stay faint until you hover them.
 
 **System tray icon**
 
@@ -30,7 +44,8 @@ local Claude Code session logs.
 - Hovering shows the full detail: both percentages with reset times, whether the
   figures are official or a local estimate, and last activity.
 - **Left-click** toggles the widget.
-- **Menu**: Show/hide widget, Refresh now, Reload settings, Quit.
+- **Menu**: Show/hide widget, Refresh now, **Style** (the five faces above, ticked),
+  Reload settings, Quit.
 
 ---
 
@@ -97,6 +112,28 @@ LaunchAgent — a `~/Library/LaunchAgents/com.local.claude-usage.plist` with
 
 ### Linux
 
+One command, instead of everything below it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Amithkrishna29z/claude-code-usage/main/install.sh | sh
+```
+
+It works out which runtime libraries you are missing and shows you the install command
+before running anything with `sudo`, downloads the latest release to
+`~/.local/bin/claude-usage`, and writes the menu and autostart entries. `--nightly`
+takes the rolling build of `main` instead, `--no-autostart` skips the login entry, and
+`--uninstall` reverses the lot (your settings are left alone). Down a pipe those flags
+need `-s --` to reach the script rather than `sh`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Amithkrishna29z/claude-code-usage/main/install.sh | sh -s -- --nightly
+```
+
+Piping a script into `sh` is a real trust decision, so [read it first](install.sh) if
+you would rather, and run it from disk.
+
+#### By hand
+
 The binary is dynamically linked against GTK and the appindicator tray, so install the
 runtime libraries first:
 
@@ -118,8 +155,13 @@ chmod +x claude-usage-linux-x86_64
 
 The tray icon needs a StatusNotifier host: Cinnamon, MATE, Xfce and KDE Plasma all
 provide one, as does GNOME with the AppIndicator extension; a bare GNOME Shell shows no
-icon, in which case the widget itself is still usable. Under Wayland the widget's
-always-on-top and remembered position depend on the compositor.
+icon, in which case the widget itself is still usable.
+
+Wayland has no always-on-top and ignores window positioning, so on a Wayland session
+the widget starts through **XWayland** instead — that is what keeps it above the app
+you switch to and returns it to where you left it. It happens automatically when
+`DISPLAY` is set alongside `WAYLAND_DISPLAY`, which is the normal case; set
+`CLAUDE_USAGE_BACKEND=wayland` to run natively on Wayland and give that up.
 
 Two tray behaviours differ here, because the appindicator protocol has no equivalent:
 **left-click does not toggle the widget** — use the menu's *Show/hide widget* — and the
@@ -152,7 +194,8 @@ command** and point it at `~/.local/bin/claude-usage` (that GUI writes the same
 
 #### Autostart on other desktops
 
-Drop a `.desktop` file in `~/.config/autostart/`:
+`install.sh` writes this for you. By hand, drop a `.desktop` file in
+`~/.config/autostart/`:
 
 ```ini
 [Desktop Entry]
@@ -282,7 +325,8 @@ Settings are a JSON file, edited by hand. Its location follows platform conventi
   "claude_dir": "",
   "widget_left": 1144.0,
   "widget_top": 602.0,
-  "widget_visible": true
+  "widget_visible": true,
+  "style": "rings"
 }
 ```
 
@@ -295,6 +339,7 @@ Settings are a JSON file, edited by hand. Its location follows platform conventi
 | `claude_dir` | Root containing `projects/` and `.credentials.json`. Empty = `~/.claude`. | `""` |
 | `widget_left` / `widget_top` | Remembered position; managed by the app. | unset |
 | `widget_visible` | Whether the widget was showing at exit. | `true` |
+| `style` | The widget's face: `rings`, `bars`, `pill`, `minimal`, `text`. Usually set from the tray's Style submenu. An unrecognised name falls back to `rings` without invalidating the rest of the file. | `"rings"` |
 
 Unknown keys are ignored and missing keys fall back to defaults, so the file survives
 version changes in both directions. After editing, pick **Reload settings** from the
@@ -401,3 +446,10 @@ headless in CI on all three platforms.
 - The fallback estimate cannot see weekly usage, and its percentage is only as good as
   the `token_limit` you calibrate.
 - No telemetry, no third-party servers, no secrets stored by this app.
+
+---
+
+## Contributors
+
+- [@Amithkrishna29z](https://github.com/Amithkrishna29z)
+- [@ashna0204](https://github.com/ashna0204)
