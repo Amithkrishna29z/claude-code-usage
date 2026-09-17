@@ -145,6 +145,14 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [lint, test, build]
     runs-on: ubuntu-latest
+    # Two pushes to main close together both refresh the same release, and the step
+    # below deletes it before recreating it. Run concurrently, the second run's delete
+    # lands between the first run's create and its uploads, and those uploads 404
+    # against a release that no longer exists. Queue instead of cancelling: whichever
+    # run goes last is the one whose build should be left standing.
+    concurrency:
+      group: rolling-latest
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
