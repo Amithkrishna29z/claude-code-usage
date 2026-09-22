@@ -13,6 +13,15 @@ notify = "8.2.0"
 tray-icon = "0.24.2"
 usage-core = { version = "0.3.0", path = "../usage-core" }
 
+# Checking whether a remembered window position still falls on a connected display
+# needs a platform query; eframe exposes no monitor geometry. Same crate tray-icon
+# already pulls in, so nothing new is fetched.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+] }
+
 # The tray on Linux is a GTK appindicator: it needs gtk::init() and a GTK main loop
 # on its own thread. Same version tray-icon pulls in, so nothing new is built.
 [target.'cfg(target_os = "linux")'.dependencies]
