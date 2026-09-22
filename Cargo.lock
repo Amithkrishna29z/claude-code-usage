@@ -3939,6 +3939,7 @@ dependencies = [
  "notify",
  "tray-icon",
  "usage-core",
+ "windows-sys 0.59.0",
  "winit",
 ]
 
