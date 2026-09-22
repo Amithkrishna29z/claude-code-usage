@@ -120,7 +120,7 @@ impl WidgetApp {
         self.config.widget_visible = visible;
 
         if visible {
-            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(self.shown_position()));
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(self.shown_position(ctx)));
             ctx.send_viewport_cmd(ViewportCommand::Focus);
         } else {
             ctx.send_viewport_cmd(ViewportCommand::OuterPosition(PARKED));
@@ -174,10 +174,26 @@ impl WidgetApp {
         }
     }
 
-    fn shown_position(&self) -> egui::Pos2 {
-        match (self.config.widget_left, self.config.widget_top) {
-            (Some(x), Some(y)) => egui::pos2(x, y),
-            _ => DEFAULT_POSITION,
+    /// Where the card should appear.
+    ///
+    /// A remembered position is only honoured while it still lands on a connected
+    /// display. Unplug the monitor the widget was left on — or rearrange the desktop
+    /// so those coordinates fall outside every screen — and the position that comes
+    /// back from config.json points nowhere. Showing the widget there leaves it
+    /// off-desktop with the tray icon as the only sign it is running, and every later
+    /// show repeats the same move, so it can never be recovered. Fall back to the
+    /// default rather than strand it.
+    fn shown_position(&self, ctx: &egui::Context) -> egui::Pos2 {
+        let (Some(x), Some(y)) = (self.config.widget_left, self.config.widget_top) else {
+            return DEFAULT_POSITION;
+        };
+
+        // The remembered position is in points; screens are laid out in pixels.
+        let scale = ctx.pixels_per_point();
+        if on_a_screen(egui::pos2(x * scale, y * scale)) {
+            egui::pos2(x, y)
+        } else {
+            DEFAULT_POSITION
         }
     }
 }
@@ -198,9 +214,16 @@ impl eframe::App for WidgetApp {
             if self.tray.is_none() {
                 eprintln!("usage: no system tray available; widget runs standalone.");
             }
-            if !self.visible {
-                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(PARKED));
-            }
+            // main() placed the window from the same remembered position, but with
+            // no way to tell whether it still lands on a screen. Re-assert it now
+            // that it can be checked, so a widget left on a monitor that is gone is
+            // recovered rather than created out of sight.
+            let position = if self.visible {
+                self.shown_position(ctx)
+            } else {
+                PARKED
+            };
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(position));
         }
 
         if let Some(latest) = self.monitor.latest() {
@@ -388,6 +411,31 @@ fn corner_button(ui: &mut egui::Ui, rect: egui::Rect, kind: CornerButton) -> egu
     }
 
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Whether a point in desktop pixels falls on a connected display.
+///
+/// Only Windows is asked. That is where a stranded widget was reported, and it is the
+/// one platform whose query is reachable from here — eframe hands out no monitor
+/// geometry, and egui reports only the size of the monitor a window is already on,
+/// never where the screens sit. Elsewhere every position is accepted, which is what
+/// the widget did everywhere before.
+#[cfg(target_os = "windows")]
+fn on_a_screen(point: egui::Pos2) -> bool {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONULL};
+
+    let point = POINT {
+        x: point.x as i32,
+        y: point.y as i32,
+    };
+    // Null is the documented answer for "that is not on any monitor".
+    !unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONULL) }.is_null()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn on_a_screen(_point: egui::Pos2) -> bool {
+    true
 }
 
 /// Where the window should be created. A widget that was hidden last time starts
