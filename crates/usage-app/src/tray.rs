@@ -2,6 +2,7 @@
 //! plus a menu. The icon is rasterised by hand into an RGBA buffer so the app needs
 //! no image decoder and no bundled asset files.
 
+use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::OnceLock;
 
@@ -51,6 +52,14 @@ fn install_handlers(sender: Sender<TrayEvent>, wake: impl Fn() + Send + Sync + '
 
     let menu_wake = wake.clone();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        // The click has already flipped the item muda owns, so the group is wrong
+        // right now. Put it right here, inside the menu's own modal loop, rather than
+        // leaving it to the frame that cannot run until the menu closes. A pick that
+        // is not a face, or a handler called off the menu's thread, finds nothing and
+        // leaves this to `Tray::set_style` as before.
+        if let Some(style) = style_for(&event.id) {
+            retick(style);
+        }
         if let Some(tx) = EVENTS.get() {
             let _ = tx.send(TrayEvent::Menu(event.id));
         }
@@ -87,6 +96,40 @@ struct MenuIds {
 /// built the menu — the main thread everywhere but Linux, the GTK thread there.
 type StyleItems = Vec<(WidgetStyle, CheckMenuItem)>;
 
+thread_local! {
+    /// The Style submenu's check items, parked on the thread that built them.
+    ///
+    /// This is what lets the menu event handler re-tick the group the instant a pick
+    /// arrives. Correcting the ticks from `update()` is too late on Windows: the menu
+    /// runs a nested modal loop on the main thread, so no frame can run until the
+    /// menu closes, and until then the submenu shows muda's own half-applied state —
+    /// two faces ticked after a change, none at all after re-picking the current one.
+    /// muda calls the handler on this same thread, so the items are reachable there
+    /// and nowhere else.
+    static STYLE_ITEMS: RefCell<StyleItems> = const { RefCell::new(Vec::new()) };
+}
+
+/// Hands the check items to the thread that will re-tick them. Call on the thread that
+/// built the menu.
+fn park_style_items(items: StyleItems) {
+    STYLE_ITEMS.with(|cell| *cell.borrow_mut() = items);
+}
+
+/// Leaves exactly one item ticked, from whichever thread owns them.
+fn retick(style: WidgetStyle) {
+    STYLE_ITEMS.with(|cell| check_only(&cell.borrow(), style));
+}
+
+/// The face `id` belongs to, if it is one of the Style submenu's items.
+fn style_for(id: &MenuId) -> Option<WidgetStyle> {
+    STYLE_ITEMS.with(|cell| {
+        cell.borrow()
+            .iter()
+            .find(|(_, item)| item.id() == id)
+            .map(|(style, _)| *style)
+    })
+}
+
 /// What the main thread asks the Linux GTK thread to apply. `TrayIcon` is not `Send`,
 /// so the pixels cross the channel and the `Icon` is built on the far side.
 #[cfg(target_os = "linux")]
@@ -102,9 +145,6 @@ pub struct Tray {
     #[cfg(target_os = "linux")]
     updates: std::sync::mpsc::Sender<TrayUpdate>,
     ids: MenuIds,
-    /// Owned here on every platform but Linux, where the GTK thread holds them.
-    #[cfg(not(target_os = "linux"))]
-    style_items: StyleItems,
     /// Raw interactions, delivered by the global handlers.
     events: Receiver<TrayEvent>,
     /// The rings last drawn, so we only rebuild the icon when it would change.
@@ -123,13 +163,15 @@ impl Tray {
         let (menu, ids, style_items) = build_menu(style)?;
         let icon = build_tray(menu).ok()?;
 
+        // This is the main thread, which is where muda will deliver menu events.
+        park_style_items(style_items);
+
         let (sender, events) = mpsc::channel();
         install_handlers(sender, wake);
 
         Some(Self {
             icon,
             ids,
-            style_items,
             events,
             last_drawn: None,
             last_tooltip: None,
@@ -163,6 +205,8 @@ impl Tray {
                     let _ = ready_tx.send(None);
                     return;
                 };
+                // The GTK thread is where muda delivers menu events on Linux.
+                park_style_items(style_items);
                 // Drained from inside the GTK loop, since the icon cannot leave this
                 // thread. Half a second is imperceptible for a 5-hour window. Armed
                 // before the handshake, so that if it fails the main thread hears
@@ -178,7 +222,7 @@ impl Tray {
                             }
                             // The check items live on this thread, so the main
                             // thread asks for the tick rather than moving it.
-                            TrayUpdate::Style(style) => check_only(&style_items, style),
+                            TrayUpdate::Style(style) => retick(style),
                         }
                     }
                     gtk::glib::ControlFlow::Continue
@@ -258,9 +302,13 @@ impl Tray {
     }
 
     /// Ticks exactly one item in the Style submenu.
+    ///
+    /// The handler has usually done this already, the moment the pick arrived. This
+    /// remains for the ticks that no click produced: the style reloaded from a
+    /// hand-edited config.json, and the one applied at startup.
     #[cfg(not(target_os = "linux"))]
     pub fn set_style(&self, style: WidgetStyle) {
-        check_only(&self.style_items, style);
+        retick(style);
     }
 
     #[cfg(target_os = "linux")]
