@@ -23,7 +23,7 @@ local Claude Code session logs.
   | **Rings** (default) | Two concentric rings, session percent in the centre, one line beneath | 122×142 |
   | **Bars** | Two labelled horizontal bars with the time left underneath | 172×88 |
   | **Pill** | One row: a small dial, the session percent, the time left | 176×40 |
-  | **Minimal** | The session percent alone, in its traffic-light colour | 78×78 |
+  | **Minimal** | The session percent alone, in its traffic-light colour | 72×78 |
   | **Text** | A single centred line, no graphics | 212×32 |
 
 - Every face uses the same colours: each window is coloured independently,

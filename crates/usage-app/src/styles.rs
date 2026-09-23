@@ -34,7 +34,7 @@ pub fn size_of(style: WidgetStyle) -> Vec2 {
         WidgetStyle::Rings => Vec2::new(122.0, 142.0),
         WidgetStyle::Bars => Vec2::new(172.0, 88.0),
         WidgetStyle::Pill => Vec2::new(196.0, 40.0),
-        WidgetStyle::Minimal => Vec2::new(78.0, 78.0),
+        WidgetStyle::Minimal => Vec2::new(72.0, 78.0),
         WidgetStyle::Text => Vec2::new(244.0, 32.0),
     }
 }
