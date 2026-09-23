@@ -11,7 +11,7 @@ eframe = "0.31.1"
 egui = "0.31.1"
 notify = "8.2.0"
 tray-icon = "0.24.2"
-usage-core = { version = "0.3.0", path = "../usage-core" }
+usage-core = { version = "0.4.0", path = "../usage-core" }
 
 # Checking whether a remembered window position still falls on a connected display
 # needs a platform query; eframe exposes no monitor geometry. Same crate tray-icon

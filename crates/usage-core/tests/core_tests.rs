@@ -255,8 +255,11 @@ fn read_events_skips_logs_untouched_since_the_cutoff() {
     std::fs::create_dir_all(&proj).unwrap();
     std::fs::write(
         proj.join("s1.jsonl"),
-        format!("{}
-", usage_line("m1", "2026-08-15T10:00:00Z", 100)),
+        format!(
+            "{}
+",
+            usage_line("m1", "2026-08-15T10:00:00Z", 100)
+        ),
     )
     .unwrap();
 
