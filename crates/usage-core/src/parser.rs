@@ -15,6 +15,15 @@ pub fn parse_line(line: &str) -> Option<UsageEvent> {
         return None;
     }
 
+    // Most lines in a session log are user turns and tool traffic carrying no usage
+    // block at all. Looking for the key as text first keeps the JSON parser off the
+    // great majority of a multi-megabyte log; a line that has the block always spells
+    // the key literally, and a false positive costs only the parse that would have
+    // happened anyway.
+    if !line.contains("\"usage\"") {
+        return None;
+    }
+
     let root: Value = serde_json::from_str(line).ok()?;
     let usage = root.get("message")?.get("usage")?;
     if !usage.is_object() {

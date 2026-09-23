@@ -188,7 +188,10 @@ fn compute(
     let now = Utc::now();
     let claude_dir = reader::resolve_claude_dir(&config.claude_dir);
 
-    let read = reader::read_events(&claude_dir, |warning| eprintln!("usage: {warning}"));
+    // Only the block covering `now` is ever reported, and it cannot start earlier
+    // than one window ago, so that is as far back as the logs need reading.
+    let since = now - calculator::window_span(config.window_hours);
+    let read = reader::read_events(&claude_dir, since, |warning| eprintln!("usage: {warning}"));
     let local = calculator::compute(
         &read.events,
         config.token_limit,

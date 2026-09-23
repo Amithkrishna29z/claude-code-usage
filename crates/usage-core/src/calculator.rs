@@ -14,6 +14,18 @@ use chrono::{DateTime, Duration, Utc};
 
 use crate::models::{UsageEvent, UsageSnapshot, UsageSource, UsageState, UsageWindow};
 
+/// The session window as a duration, with the fallback the calculator applies to a
+/// missing or nonsensical setting. Shared so a caller sizing its own work to the
+/// window cannot drift from the rule used to compute the block.
+pub fn window_span(window_hours: f64) -> Duration {
+    let hours = if window_hours <= 0.0 {
+        5.0
+    } else {
+        window_hours
+    };
+    Duration::milliseconds((hours * 3_600_000.0) as i64)
+}
+
 pub fn compute(
     events: &[UsageEvent],
     token_limit: i64,
@@ -28,12 +40,7 @@ pub fn compute(
         return UsageSnapshot::empty(UsageState::NoData, token_limit, now);
     }
 
-    let hours = if window_hours <= 0.0 {
-        5.0
-    } else {
-        window_hours
-    };
-    let window = Duration::milliseconds((hours * 3_600_000.0) as i64);
+    let window = window_span(window_hours);
 
     let mut ordered: Vec<&UsageEvent> = events.iter().collect();
     ordered.sort_by_key(|e| e.timestamp);

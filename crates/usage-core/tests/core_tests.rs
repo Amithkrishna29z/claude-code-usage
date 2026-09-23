@@ -13,6 +13,12 @@ fn utc(text: &str) -> DateTime<Utc> {
         .with_timezone(&Utc)
 }
 
+/// A cutoff far enough back that every log counts as in range — for the cases that
+/// are about what the reader parses, not which files it reaches for.
+fn epoch() -> DateTime<Utc> {
+    utc("1970-01-01T00:00:00Z")
+}
+
 fn evt(timestamp: &str, total: i64) -> UsageEvent {
     UsageEvent {
         timestamp: utc(timestamp),
@@ -199,7 +205,7 @@ fn zero_token_limit_does_not_divide_by_zero() {
 #[test]
 fn read_events_reports_no_logs_when_projects_dir_missing() {
     let temp = TempDir::new("noproj");
-    let result = reader::read_events(&temp.path().join("does-not-exist"), |_| {});
+    let result = reader::read_events(&temp.path().join("does-not-exist"), epoch(), |_| {});
 
     assert!(!result.logs_found);
     assert!(result.events.is_empty());
@@ -234,12 +240,34 @@ fn read_events_dedupes_same_message_id_across_files() {
     )
     .unwrap();
 
-    let result = reader::read_events(temp.path(), |_| {});
+    let result = reader::read_events(temp.path(), epoch(), |_| {});
 
     assert!(result.logs_found);
     assert_eq!(result.events.len(), 3); // dup counted once
     let total: i64 = result.events.iter().map(|e| e.total_tokens()).sum();
     assert_eq!(total, 600);
+}
+
+#[test]
+fn read_events_skips_logs_untouched_since_the_cutoff() {
+    let temp = TempDir::new("cutoff");
+    let proj = temp.path().join("projects").join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("s1.jsonl"),
+        format!("{}
+", usage_line("m1", "2026-08-15T10:00:00Z", 100)),
+    )
+    .unwrap();
+
+    // The file was written just now, so a cutoff an hour ahead puts it out of range
+    // the same way an old log falls behind a cutoff one window back.
+    let result = reader::read_events(temp.path(), Utc::now() + Duration::hours(1), |_| {});
+
+    // Not parsed -- but the tree plainly has logs in it, which is a different thing
+    // from having none, and the caption depends on telling them apart.
+    assert!(result.logs_found);
+    assert!(result.events.is_empty());
 }
 
 #[test]
