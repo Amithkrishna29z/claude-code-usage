@@ -65,6 +65,10 @@ pub struct WidgetApp {
     /// this is what has actually been applied, so a change from any source — the
     /// tray menu, a hand-edited config.json — is noticed in one place.
     applied_style: WidgetStyle,
+    /// The scale factor the window's size was last pinned for. See
+    /// [`WidgetApp::apply_style`] for why the pin does not survive a change of
+    /// display on its own.
+    applied_scale: f32,
 }
 
 impl WidgetApp {
@@ -81,6 +85,10 @@ impl WidgetApp {
             tray_attempted: false,
             visible,
             applied_style: config_style,
+            // Unset until the first frame, which is the first chance to ask what
+            // scale the window actually ended up on: main() sized it for the
+            // primary display, which is not necessarily the one it opens on.
+            applied_scale: 0.0,
         }
     }
 
@@ -153,9 +161,20 @@ impl WidgetApp {
     /// The viewport was built with its minimum and maximum inner size pinned together
     /// to keep the card unresizable, so the pair has to be relaxed before the new size
     /// will take, then pinned again around it.
+    ///
+    /// Also run whenever the window's scale factor changes, which is what happens when
+    /// it is dragged onto a display scaled differently. A size is asked for in points
+    /// but reaches the window manager as physical pixels, worked out from the scale in
+    /// force when it was sent — so the pin is only right for the display it was sent
+    /// for. Left alone, Windows then clamps the new display's own resize to those stale
+    /// pixels: the card keeps its old pixel box while egui redraws it at the new scale,
+    /// so it comes out oversized on the lower-scaled screen and cropped on the higher.
+    /// Re-sending the pin at the new scale converts it afresh and the card keeps the
+    /// size the face asked for on every screen.
     fn apply_style(&mut self, ctx: &egui::Context) {
         let style = self.config.style;
         self.applied_style = style;
+        self.applied_scale = ctx.pixels_per_point();
 
         let size = styles::size_of(style);
         ctx.send_viewport_cmd(ViewportCommand::MinInnerSize(Vec2::ZERO));
@@ -246,7 +265,7 @@ impl eframe::App for WidgetApp {
             ctx.request_repaint();
         }
 
-        if self.config.style != self.applied_style {
+        if self.config.style != self.applied_style || ctx.pixels_per_point() != self.applied_scale {
             self.apply_style(ctx);
         }
 
