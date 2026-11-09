@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use usage_core::models::{UsageEvent, UsageState};
-use usage_core::{calculator, config::ConfigService, oauth, parser, reader, WidgetStyle};
+use usage_core::{
+    calculator, config::ConfigService, oauth, parser, reader, WidgetStyle, DEFAULT_QUESTION_TIME,
+};
 
 fn utc(text: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(text)
@@ -200,6 +202,12 @@ fn zero_token_limit_does_not_divide_by_zero() {
     assert_eq!(snap.percent_used(), 0.0);
 }
 
+#[test]
+fn nonpositive_window_settings_use_the_documented_five_hour_default() {
+    assert_eq!(calculator::window_span(0.0), Duration::hours(5));
+    assert_eq!(calculator::window_span(-1.0), Duration::hours(5));
+}
+
 // ---- reader ----
 
 #[test]
@@ -246,6 +254,28 @@ fn read_events_dedupes_same_message_id_across_files() {
     assert_eq!(result.events.len(), 3); // dup counted once
     let total: i64 = result.events.iter().map(|e| e.total_tokens()).sum();
     assert_eq!(total, 600);
+}
+
+#[test]
+fn read_events_keeps_events_without_message_ids() {
+    let temp = TempDir::new("no-message-id");
+    let project = temp.path().join("projects").join("project");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let line = r#"{"type":"assistant","timestamp":"2026-08-15T10:00:00Z","message":{"usage":{"input_tokens":100}}}"#;
+    std::fs::write(project.join("session.jsonl"), format!("{line}\n{line}\n")).unwrap();
+
+    let result = reader::read_events(temp.path(), epoch(), |_| {});
+
+    assert_eq!(result.events.len(), 2);
+    assert_eq!(
+        result
+            .events
+            .iter()
+            .map(UsageEvent::total_tokens)
+            .sum::<i64>(),
+        200
+    );
 }
 
 #[test]
@@ -433,6 +463,21 @@ fn save_then_load_round_trips() {
 }
 
 #[test]
+fn daily_question_settings_round_trip_through_config() {
+    let temp = TempDir::new("daily-question-roundtrip");
+    let service = ConfigService::with_dir(temp.path());
+    let mut config = service.load();
+    config.daily_question_time = "21:30".into();
+    config.daily_question_last_asked = "2026-11-09".into();
+
+    service.save(&config).expect("saved");
+    let loaded = service.load();
+
+    assert_eq!(loaded.daily_question_time, "21:30");
+    assert_eq!(loaded.daily_question_last_asked, "2026-11-09");
+}
+
+#[test]
 fn unknown_and_missing_keys_do_not_break_loading() {
     let temp = TempDir::new("partial");
     let service = ConfigService::with_dir(temp.path());
@@ -448,6 +493,8 @@ fn unknown_and_missing_keys_do_not_break_loading() {
     let loaded = service.load();
     assert_eq!(loaded.token_limit, 99);
     assert!(loaded.use_official_usage); // defaulted, not lost
+    assert_eq!(loaded.daily_question_time, DEFAULT_QUESTION_TIME);
+    assert_eq!(loaded.daily_question_last_asked, "");
 }
 
 #[test]
