@@ -391,6 +391,14 @@ fn build_tray(menu: Menu) -> tray_icon::Result<TrayIcon> {
     let placeholder = UsageSnapshot::empty(UsageState::NoData, 0, chrono::Utc::now());
     TrayIconBuilder::new()
         .with_menu(Box::new(menu))
+        // Left-click must mean one thing. tray-icon opens the menu on left-click as
+        // well as right by default, while still reporting the click — so a left-click
+        // queued a toggle *and* opened the menu, and the pick that followed queued a
+        // second one. Both were drained by the same frame, because the menu's modal
+        // loop blocks the main thread until it closes, so the widget was shown and
+        // hidden again before anything was drawn and every menu pick looked dead.
+        // Right-click still opens the menu, which is the Windows idiom anyway.
+        .with_menu_on_left_click(false)
         .with_tooltip("Claude Code Usage")
         .with_icon(icon_from(render_pixels(&placeholder)))
         .build()
