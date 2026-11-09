@@ -45,7 +45,17 @@ local Claude Code session logs.
   figures are official or a local estimate, and last activity.
 - **Left-click** toggles the widget.
 - **Menu**: Show/hide widget, Refresh now, **Style** (the five faces above, ticked),
-  Reload settings, Quit.
+  **Daily question** (the time it arrives, ticked), Reload settings, Quit.
+
+**A question each morning**
+
+- Once a day, at **6:00 AM** local by default, the app asks your installed `claude`
+  CLI for one thought-provoking question and shows it as a desktop notification.
+- Pick the time — or turn it off — from the tray's **Daily question** submenu. The
+  choice is remembered between runs.
+- One question per local calendar day, counted by the date rather than by a timer:
+  close the app overnight, or leave the laptop asleep past the time, and the day's
+  question arrives once the app is next running. It never arrives twice in a day.
 
 ---
 
@@ -326,7 +336,9 @@ Settings are a JSON file, edited by hand. Its location follows platform conventi
   "widget_left": 1144.0,
   "widget_top": 602.0,
   "widget_visible": true,
-  "style": "rings"
+  "style": "rings",
+  "daily_question_time": "06:00",
+  "daily_question_last_asked": ""
 }
 ```
 
@@ -340,10 +352,36 @@ Settings are a JSON file, edited by hand. Its location follows platform conventi
 | `widget_left` / `widget_top` | Remembered position; managed by the app. | unset |
 | `widget_visible` | Whether the widget was showing at exit. | `true` |
 | `style` | The widget's face: `rings`, `bars`, `pill`, `minimal`, `text`. Usually set from the tray's Style submenu. An unrecognised name falls back to `rings` without invalidating the rest of the file. | `"rings"` |
+| `daily_question_time` | Local time of day for the daily question, `HH:MM` on a 24-hour clock. Empty turns it off. The tray submenu offers a few times; any minute works here. Anything unreadable is treated as `06:00`. | `"06:00"` |
+| `daily_question_last_asked` | The local date the last question was asked on. Managed by the app — this is what keeps it to one a day across restarts. | `""` |
 
 Unknown keys are ignored and missing keys fall back to defaults, so the file survives
 version changes in both directions. After editing, pick **Reload settings** from the
 tray menu — no restart needed.
+
+### The daily question
+
+The app runs `claude -p` with a one-line prompt and puts the answer in a notification.
+That means it needs the **`claude` CLI on your `PATH` and signed in** — the same
+install the rest of the widget already depends on. Nothing is stored: there is no
+history and no answer to give back.
+
+The time is a wall-clock comparison, not a timer, which is what makes it survive a
+restart, a sleeping laptop and the clocks going forward. The flip side is that the
+first run of the day asks as soon as the app is up if the time has already passed —
+so installing this at lunchtime gets you a question straight away rather than
+tomorrow morning.
+
+If the CLI fails — offline, signed out, not installed — it is logged to stderr and
+retried about ten minutes later, so one bad moment at 6am does not cost the day.
+
+Picking a time from the submenu only affects days that have not been asked yet;
+moving it earlier never re-fires a question you have already had today.
+
+> **Windows:** notifications are posted under the Windows PowerShell app identity,
+> which is what a desktop program without an installer gets. They arrive in the
+> notification centre; whether Windows also shows a banner is a system notification
+> setting, not something the app controls.
 
 ### How often it refreshes
 The countdown on the widget ticks **every second**, and the local estimate updates
@@ -410,6 +448,7 @@ crates/
     src/widget.rs                   # the minimal card: rings, percent, compact line
     src/tray.rs                     # tray icon rasteriser, menu, tooltip
     src/monitor.rs                  # worker thread: official-first refresh, cache, watcher
+    src/question.rs                 # daily question: schedule, claude CLI, notification
     src/visuals.rs                  # shared colours + formatting
 .github/workflows/ci.yml
 ```

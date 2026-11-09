@@ -12,6 +12,7 @@ use tray_icon::menu::{
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use usage_core::{UsageSnapshot, UsageState, WidgetStyle};
 
+use crate::question;
 use crate::visuals;
 
 const SIZE: u32 = 32;
@@ -25,6 +26,9 @@ pub enum TrayCommand {
     ReloadSettings,
     /// Wear a different face, picked from the Style submenu.
     SetStyle(WidgetStyle),
+    /// Ask the daily question at a different time, picked from the Daily question
+    /// submenu. One of [`question::PRESETS`]; `""` turns it off.
+    SetQuestionTime(&'static str),
     Quit,
 }
 
@@ -60,6 +64,9 @@ fn install_handlers(sender: Sender<TrayEvent>, wake: impl Fn() + Send + Sync + '
         if let Some(style) = style_for(&event.id) {
             retick(style);
         }
+        if let Some(time) = question_for(&event.id) {
+            retick_question(time);
+        }
         if let Some(tx) = EVENTS.get() {
             let _ = tx.send(TrayEvent::Menu(event.id));
         }
@@ -90,11 +97,16 @@ struct MenuIds {
     quit: MenuId,
     /// One id per style, so a click in the submenu maps straight back to a face.
     styles: Vec<(WidgetStyle, MenuId)>,
+    /// The same for the daily question times.
+    questions: Vec<(&'static str, MenuId)>,
 }
 
 /// The submenu's check items. They are not `Send`, so they stay on whichever thread
 /// built the menu — the main thread everywhere but Linux, the GTK thread there.
 type StyleItems = Vec<(WidgetStyle, CheckMenuItem)>;
+
+/// The Daily question submenu's check items, parked the same way.
+type QuestionItems = Vec<(&'static str, CheckMenuItem)>;
 
 thread_local! {
     /// The Style submenu's check items, parked on the thread that built them.
@@ -107,17 +119,26 @@ thread_local! {
     /// muda calls the handler on this same thread, so the items are reachable there
     /// and nowhere else.
     static STYLE_ITEMS: RefCell<StyleItems> = const { RefCell::new(Vec::new()) };
+
+    /// The Daily question submenu's check items, for the same reason.
+    static QUESTION_ITEMS: RefCell<QuestionItems> = const { RefCell::new(Vec::new()) };
 }
 
 /// Hands the check items to the thread that will re-tick them. Call on the thread that
 /// built the menu.
-fn park_style_items(items: StyleItems) {
+fn park_style_items(items: StyleItems, questions: QuestionItems) {
     STYLE_ITEMS.with(|cell| *cell.borrow_mut() = items);
+    QUESTION_ITEMS.with(|cell| *cell.borrow_mut() = questions);
 }
 
 /// Leaves exactly one item ticked, from whichever thread owns them.
 fn retick(style: WidgetStyle) {
     STYLE_ITEMS.with(|cell| check_only(&cell.borrow(), style));
+}
+
+/// The same for the Daily question group.
+fn retick_question(time: &str) {
+    QUESTION_ITEMS.with(|cell| check_only_time(&cell.borrow(), time));
 }
 
 /// The face `id` belongs to, if it is one of the Style submenu's items.
@@ -130,6 +151,16 @@ fn style_for(id: &MenuId) -> Option<WidgetStyle> {
     })
 }
 
+/// The time `id` belongs to, if it is one of the Daily question submenu's items.
+fn question_for(id: &MenuId) -> Option<&'static str> {
+    QUESTION_ITEMS.with(|cell| {
+        cell.borrow()
+            .iter()
+            .find(|(_, item)| item.id() == id)
+            .map(|(time, _)| *time)
+    })
+}
+
 /// What the main thread asks the Linux GTK thread to apply. `TrayIcon` is not `Send`,
 /// so the pixels cross the channel and the `Icon` is built on the far side.
 #[cfg(target_os = "linux")]
@@ -137,6 +168,7 @@ enum TrayUpdate {
     Icon(Vec<u8>),
     Tooltip(String),
     Style(WidgetStyle),
+    QuestionTime(String),
 }
 
 pub struct Tray {
@@ -159,12 +191,16 @@ impl Tray {
     /// Must be called on the main thread — macOS requires it, and Windows needs the
     /// creating thread to own a message pump.
     #[cfg(not(target_os = "linux"))]
-    pub fn new(style: WidgetStyle, wake: impl Fn() + Send + Sync + 'static) -> Option<Self> {
-        let (menu, ids, style_items) = build_menu(style)?;
+    pub fn new(
+        style: WidgetStyle,
+        question_time: &str,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Option<Self> {
+        let (menu, ids, style_items, question_items) = build_menu(style, question_time)?;
         let icon = build_tray(menu).ok()?;
 
         // This is the main thread, which is where muda will deliver menu events.
-        park_style_items(style_items);
+        park_style_items(style_items, question_items);
 
         let (sender, events) = mpsc::channel();
         install_handlers(sender, wake);
@@ -185,9 +221,16 @@ impl Tray {
     /// activations still arrive through tray-icon's global receivers, which are
     /// cross-thread, so `poll` stays on the main thread unchanged.
     #[cfg(target_os = "linux")]
-    pub fn new(style: WidgetStyle, wake: impl Fn() + Send + Sync + 'static) -> Option<Self> {
+    pub fn new(
+        style: WidgetStyle,
+        question_time: &str,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Option<Self> {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Option<MenuIds>>();
         let (updates, incoming) = std::sync::mpsc::channel::<TrayUpdate>();
+
+        // The menu is built on the GTK thread, so the starting tick travels with it.
+        let question_time = question_time.to_owned();
 
         std::thread::Builder::new()
             .name("tray-gtk".to_owned())
@@ -197,16 +240,18 @@ impl Tray {
                     return;
                 }
 
-                let tray = build_menu(style).and_then(|(menu, ids, style_items)| {
-                    let tray = build_tray(menu).ok()?;
-                    Some((tray, ids, style_items))
-                });
-                let Some((tray, ids, style_items)) = tray else {
+                let tray = build_menu(style, &question_time).and_then(
+                    |(menu, ids, style_items, question_items)| {
+                        let tray = build_tray(menu).ok()?;
+                        Some((tray, ids, style_items, question_items))
+                    },
+                );
+                let Some((tray, ids, style_items, question_items)) = tray else {
                     let _ = ready_tx.send(None);
                     return;
                 };
                 // The GTK thread is where muda delivers menu events on Linux.
-                park_style_items(style_items);
+                park_style_items(style_items, question_items);
                 // Drained from inside the GTK loop, since the icon cannot leave this
                 // thread. Half a second is imperceptible for a 5-hour window. Armed
                 // before the handshake, so that if it fails the main thread hears
@@ -223,6 +268,7 @@ impl Tray {
                             // The check items live on this thread, so the main
                             // thread asks for the tick rather than moving it.
                             TrayUpdate::Style(style) => retick(style),
+                            TrayUpdate::QuestionTime(time) => retick_question(&time),
                         }
                     }
                     gtk::glib::ControlFlow::Continue
@@ -278,6 +324,9 @@ impl Tray {
             if let Some((style, _)) = self.ids.styles.iter().find(|(_, sid)| *sid == id) {
                 return Some(TrayCommand::SetStyle(*style));
             }
+            if let Some((time, _)) = self.ids.questions.iter().find(|(_, qid)| *qid == id) {
+                return Some(TrayCommand::SetQuestionTime(time));
+            }
         }
         None
     }
@@ -316,6 +365,17 @@ impl Tray {
         let _ = self.updates.send(TrayUpdate::Style(style));
     }
 
+    /// Ticks the Daily question submenu, for the same reasons as `set_style`.
+    #[cfg(not(target_os = "linux"))]
+    pub fn set_question_time(&self, time: &str) {
+        retick_question(time);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn set_question_time(&self, time: &str) {
+        let _ = self.updates.send(TrayUpdate::QuestionTime(time.to_owned()));
+    }
+
     #[cfg(not(target_os = "linux"))]
     fn set_icon(&self, pixels: Vec<u8>) {
         let _ = self.icon.set_icon(Some(icon_from(pixels)));
@@ -340,8 +400,11 @@ impl Tray {
 }
 
 /// The menu is identical on every platform; only the thread it is built on differs.
-/// `style` is the face to show ticked when the menu first opens.
-fn build_menu(style: WidgetStyle) -> Option<(Menu, MenuIds, StyleItems)> {
+/// `style` and `question_time` are what to show ticked when the menu first opens.
+fn build_menu(
+    style: WidgetStyle,
+    question_time: &str,
+) -> Option<(Menu, MenuIds, StyleItems, QuestionItems)> {
     let toggle = MenuItem::new("Show/hide widget", true, None);
     let refresh = MenuItem::new("Refresh now", true, None);
     let reload = MenuItem::new("Reload settings", true, None);
@@ -356,11 +419,32 @@ fn build_menu(style: WidgetStyle) -> Option<(Menu, MenuIds, StyleItems)> {
         styles_menu.append(item).ok()?;
     }
 
+    let questions_menu = Submenu::new("Daily question", true);
+    let question_items: QuestionItems = question::PRESETS
+        .into_iter()
+        .map(|(time, label)| {
+            (
+                time,
+                CheckMenuItem::new(label, true, time == question_time, None),
+            )
+        })
+        .collect();
+    for (time, item) in &question_items {
+        questions_menu.append(item).ok()?;
+        // A rule under Off, so the times read as one group and the switch as another.
+        if time.is_empty() {
+            questions_menu
+                .append(&PredefinedMenuItem::separator())
+                .ok()?;
+        }
+    }
+
     let menu = Menu::new();
     menu.append(&toggle).ok()?;
     menu.append(&refresh).ok()?;
     menu.append(&PredefinedMenuItem::separator()).ok()?;
     menu.append(&styles_menu).ok()?;
+    menu.append(&questions_menu).ok()?;
     menu.append(&reload).ok()?;
     menu.append(&PredefinedMenuItem::separator()).ok()?;
     menu.append(&quit).ok()?;
@@ -374,9 +458,13 @@ fn build_menu(style: WidgetStyle) -> Option<(Menu, MenuIds, StyleItems)> {
             .iter()
             .map(|(s, item)| (*s, item.id().clone()))
             .collect(),
+        questions: question_items
+            .iter()
+            .map(|(time, item)| (*time, item.id().clone()))
+            .collect(),
     };
 
-    Some((menu, ids, style_items))
+    Some((menu, ids, style_items, question_items))
 }
 
 /// Leaves exactly one item checked. Called after every pick, including a re-pick of
@@ -384,6 +472,15 @@ fn build_menu(style: WidgetStyle) -> Option<(Menu, MenuIds, StyleItems)> {
 fn check_only(items: &StyleItems, style: WidgetStyle) {
     for (candidate, item) in items {
         item.set_checked(*candidate == style);
+    }
+}
+
+/// The same for the Daily question group. A time that is not one of the presets —
+/// hand-edited into config.json — leaves every item unticked, which is honest: none of
+/// them is what is set.
+fn check_only_time(items: &QuestionItems, time: &str) {
+    for (candidate, item) in items {
+        item.set_checked(*candidate == time);
     }
 }
 

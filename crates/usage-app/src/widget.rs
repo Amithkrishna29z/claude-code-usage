@@ -9,6 +9,7 @@ use eframe::egui::{self, Color32, Sense, Stroke, Vec2, ViewportCommand};
 use usage_core::{AppConfig, ConfigService, UsageSnapshot, UsageState, WidgetStyle};
 
 use crate::monitor::UsageMonitor;
+use crate::question::DailyQuestion;
 use crate::styles;
 use crate::tray::{Tray, TrayCommand};
 use crate::visuals;
@@ -69,6 +70,12 @@ pub struct WidgetApp {
     /// [`WidgetApp::apply_style`] for why the pin does not survive a change of
     /// display on its own.
     applied_scale: f32,
+    /// Asks the Claude CLI for one question a day and shows it.
+    question: DailyQuestion,
+    /// The daily-question time the tray menu is ticked for, so a change from any
+    /// source — the submenu, a hand-edited config.json — is noticed in one place,
+    /// the same way `applied_style` does it for the face.
+    applied_question_time: String,
 }
 
 impl WidgetApp {
@@ -76,6 +83,7 @@ impl WidgetApp {
         let visible = config.widget_visible;
         // main() built the window at this style's size, so it is already applied.
         let config_style = config.style;
+        let question_time = config.daily_question_time.clone();
         Self {
             snapshot: UsageSnapshot::empty(UsageState::NoData, config.token_limit, Utc::now()),
             config,
@@ -89,6 +97,9 @@ impl WidgetApp {
             // scale the window actually ended up on: main() sized it for the
             // primary display, which is not necessarily the one it opens on.
             applied_scale: 0.0,
+            question: DailyQuestion::new(),
+            // The menu is built ticked for this, so it is already applied.
+            applied_question_time: question_time,
         }
     }
 
@@ -153,6 +164,26 @@ impl WidgetApp {
             return;
         }
         self.config.style = style;
+        self.persist();
+    }
+
+    /// Moves the daily question to a different time, or turns it off with `""`.
+    ///
+    /// Re-picking the time already set still has to re-tick the group, for the same
+    /// reason `set_style` does: the check item unticks itself on the way in.
+    fn set_question_time(&mut self, time: &str) {
+        self.applied_question_time = time.to_owned();
+        if let Some(tray) = self.tray.as_ref() {
+            tray.set_question_time(time);
+        }
+
+        if self.config.daily_question_time == time {
+            return;
+        }
+        self.config.daily_question_time = time.to_owned();
+        // A time moved later in the day should not fire for a day already answered,
+        // and one moved earlier should not re-fire for today either — the day marker
+        // carries over untouched, so only tomorrow is affected.
         self.persist();
     }
 
@@ -229,7 +260,11 @@ impl eframe::App for WidgetApp {
         if !self.tray_attempted {
             self.tray_attempted = true;
             let waker = ctx.clone();
-            self.tray = Tray::new(self.config.style, move || waker.request_repaint());
+            self.tray = Tray::new(
+                self.config.style,
+                &self.config.daily_question_time,
+                move || waker.request_repaint(),
+            );
             if self.tray.is_none() {
                 eprintln!("usage: no system tray available; widget runs standalone.");
             }
@@ -255,6 +290,7 @@ impl eframe::App for WidgetApp {
                 TrayCommand::Refresh => self.monitor.refresh_now(),
                 TrayCommand::ReloadSettings => self.reload_settings(),
                 TrayCommand::SetStyle(style) => self.set_style(style),
+                TrayCommand::SetQuestionTime(time) => self.set_question_time(time),
                 TrayCommand::Quit => {
                     self.persist();
                     ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -267,6 +303,21 @@ impl eframe::App for WidgetApp {
 
         if self.config.style != self.applied_style || ctx.pixels_per_point() != self.applied_scale {
             self.apply_style(ctx);
+        }
+
+        // A hand-edited time arrives through Reload settings, not a menu pick, so the
+        // tick has to be corrected from here.
+        if self.config.daily_question_time != self.applied_question_time {
+            let time = self.config.daily_question_time.clone();
+            self.set_question_time(&time);
+        }
+
+        // Cheap enough to run every frame: a clock comparison, and at most one spawn
+        // a day. It runs whether the card is shown or parked, which is the point —
+        // the question should arrive with the widget hidden too.
+        if let Some(day) = self.question.tick(&self.config) {
+            self.config.daily_question_last_asked = day.to_string();
+            self.persist();
         }
 
         let now = Utc::now();
