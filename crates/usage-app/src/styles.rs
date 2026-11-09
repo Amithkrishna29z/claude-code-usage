@@ -444,3 +444,24 @@ fn arc(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn documented_style_dimensions_match_the_rendering_contract() {
+        let expected = [
+            (WidgetStyle::Rings, Vec2::new(122.0, 142.0)),
+            (WidgetStyle::Bars, Vec2::new(172.0, 88.0)),
+            (WidgetStyle::Pill, Vec2::new(186.0, 40.0)),
+            (WidgetStyle::Minimal, Vec2::new(72.0, 78.0)),
+            (WidgetStyle::Text, Vec2::new(244.0, 32.0)),
+        ];
+
+        assert_eq!(WidgetStyle::ALL, expected.map(|(style, _)| style));
+        for (style, size) in expected {
+            assert_eq!(size_of(style), size, "{}", style.label());
+        }
+    }
+}

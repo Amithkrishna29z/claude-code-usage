@@ -226,6 +226,9 @@ fn default_refresh_seconds() -> u64 {
     300
 }
 
+/// When the daily question is asked unless told otherwise.
+pub const DEFAULT_QUESTION_TIME: &str = "06:00";
+
 /// User configuration, persisted as JSON in the platform config directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -274,6 +277,19 @@ pub struct AppConfig {
     /// The widget's face. Set it from the tray's *Style* submenu, or by hand:
     /// `rings`, `bars`, `pill`, `minimal`, `text`.
     pub style: WidgetStyle,
+
+    /// Local time of day to ask the daily question, as `HH:MM` on a 24-hour clock.
+    /// Empty turns the question off. The tray's *Daily question* submenu offers a
+    /// few times; any minute can be set by hand.
+    ///
+    /// An unreadable value is treated as the 6am default rather than as "off": a
+    /// typo in a hand-edited file should not silently stop the question arriving.
+    pub daily_question_time: String,
+
+    /// The local date, `YYYY-MM-DD`, the last question was asked on. Empty means
+    /// never. This is what keeps it to one question per calendar day across a
+    /// restart, so it is written by the app rather than set by hand.
+    pub daily_question_last_asked: String,
 }
 
 impl Default for AppConfig {
@@ -288,6 +304,8 @@ impl Default for AppConfig {
             widget_top: None,
             widget_visible: true,
             style: WidgetStyle::default(),
+            daily_question_time: DEFAULT_QUESTION_TIME.to_owned(),
+            daily_question_last_asked: String::new(),
         }
     }
 }

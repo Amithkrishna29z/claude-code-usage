@@ -10,6 +10,11 @@ chrono = "0.4.45"
 eframe = "0.31.1"
 egui = "0.31.1"
 notify = "8.2.0"
+# Native notifications for the daily question: WinRT toast on Windows,
+# NSUserNotification on macOS, libnotify over D-Bus on Linux. The question text is
+# passed as a value rather than interpolated into a shell command, which is what
+# keeps model-written text out of a command line.
+notify-rust = "4.19.0"
 tray-icon = "0.24.2"
 usage-core = { version = "0.4.0", path = "../usage-core" }
 
