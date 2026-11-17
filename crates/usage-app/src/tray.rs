@@ -61,11 +61,15 @@ fn install_handlers(sender: Sender<TrayEvent>, wake: impl Fn() + Send + Sync + '
         // leaving it to the frame that cannot run until the menu closes. A pick that
         // is not a face, or a handler called off the menu's thread, finds nothing and
         // leaves this to `Tray::set_style` as before.
+        //
+        // The clicked item is named so the re-tick can leave that one alone: muda
+        // hands the event over while still holding a mutable borrow of it, and
+        // writing to it from here is a panic. See `check_only`.
         if let Some(style) = style_for(&event.id) {
-            retick(style);
+            retick(style, Some(&event.id));
         }
         if let Some(time) = question_for(&event.id) {
-            retick_question(time);
+            retick_question(time, Some(&event.id));
         }
         if let Some(tx) = EVENTS.get() {
             let _ = tx.send(TrayEvent::Menu(event.id));
@@ -131,14 +135,15 @@ fn park_style_items(items: StyleItems, questions: QuestionItems) {
     QUESTION_ITEMS.with(|cell| *cell.borrow_mut() = questions);
 }
 
-/// Leaves exactly one item ticked, from whichever thread owns them.
-fn retick(style: WidgetStyle) {
-    STYLE_ITEMS.with(|cell| check_only(&cell.borrow(), style));
+/// Leaves exactly one item ticked, from whichever thread owns them. `clicked` is the
+/// item the pick came from when this runs inside muda's handler, and `None` otherwise.
+fn retick(style: WidgetStyle, clicked: Option<&MenuId>) {
+    STYLE_ITEMS.with(|cell| check_only(&cell.borrow(), style, clicked));
 }
 
 /// The same for the Daily question group.
-fn retick_question(time: &str) {
-    QUESTION_ITEMS.with(|cell| check_only_time(&cell.borrow(), time));
+fn retick_question(time: &str, clicked: Option<&MenuId>) {
+    QUESTION_ITEMS.with(|cell| check_only_time(&cell.borrow(), time, clicked));
 }
 
 /// The face `id` belongs to, if it is one of the Style submenu's items.
@@ -267,8 +272,8 @@ impl Tray {
                             }
                             // The check items live on this thread, so the main
                             // thread asks for the tick rather than moving it.
-                            TrayUpdate::Style(style) => retick(style),
-                            TrayUpdate::QuestionTime(time) => retick_question(&time),
+                            TrayUpdate::Style(style) => retick(style, None),
+                            TrayUpdate::QuestionTime(time) => retick_question(&time, None),
                         }
                     }
                     gtk::glib::ControlFlow::Continue
@@ -357,7 +362,7 @@ impl Tray {
     /// hand-edited config.json, and the one applied at startup.
     #[cfg(not(target_os = "linux"))]
     pub fn set_style(&self, style: WidgetStyle) {
-        retick(style);
+        retick(style, None);
     }
 
     #[cfg(target_os = "linux")]
@@ -368,7 +373,7 @@ impl Tray {
     /// Ticks the Daily question submenu, for the same reasons as `set_style`.
     #[cfg(not(target_os = "linux"))]
     pub fn set_question_time(&self, time: &str) {
-        retick_question(time);
+        retick_question(time, None);
     }
 
     #[cfg(target_os = "linux")]
@@ -469,8 +474,21 @@ fn build_menu(
 
 /// Leaves exactly one item checked. Called after every pick, including a re-pick of
 /// the face already in use, which a check item would otherwise untick itself.
-fn check_only(items: &StyleItems, style: WidgetStyle) {
+///
+/// `clicked` is the one item that must not be written to. muda sends the menu event
+/// from inside `menu_selected`, which holds a mutable borrow of the clicked item's
+/// shared cell for the whole call — so `set_checked` on that item borrows the cell a
+/// second time and panics, and the panic unwinds out of muda's window procedure,
+/// which aborts the process with no message anywhere. Skipping it costs nothing:
+/// muda has already toggled it, which is the state the group wants whenever the pick
+/// is a change. A re-pick of the item already ticked is the exception — muda unticks
+/// it, and the deferred `Tray::set_style`, running once the menu has closed and the
+/// borrow is gone, is what puts it back.
+fn check_only(items: &StyleItems, style: WidgetStyle, clicked: Option<&MenuId>) {
     for (candidate, item) in items {
+        if clicked == Some(item.id()) {
+            continue;
+        }
         item.set_checked(*candidate == style);
     }
 }
@@ -478,8 +496,11 @@ fn check_only(items: &StyleItems, style: WidgetStyle) {
 /// The same for the Daily question group. A time that is not one of the presets —
 /// hand-edited into config.json — leaves every item unticked, which is honest: none of
 /// them is what is set.
-fn check_only_time(items: &QuestionItems, time: &str) {
+fn check_only_time(items: &QuestionItems, time: &str, clicked: Option<&MenuId>) {
     for (candidate, item) in items {
+        if clicked == Some(item.id()) {
+            continue;
+        }
         item.set_checked(*candidate == time);
     }
 }
@@ -663,6 +684,90 @@ mod tests {
         assert!(pixels
             .chunks_exact(4)
             .any(|pixel| pixel[..3] == [0x33, 0xC0, 0x59]));
+    }
+
+    /// The question items as the menu holds them, with `checked` ticked.
+    ///
+    /// They are appended to a real submenu and it is handed back with them, because
+    /// `is_checked` reads the tick from the native menu an item belongs to: an item on
+    /// its own answers from an unrelated field, and dropping the submenu would take
+    /// the native menu with it.
+    ///
+    /// Everything built on this is off on macOS, where muda refuses to create a menu
+    /// item anywhere but the main thread and a test gets a thread of its own. What is
+    /// under test is the same code on every platform, and Windows — whose borrow is
+    /// the reason the skip exists at all — runs it.
+    #[cfg(not(target_os = "macos"))]
+    fn question_items(checked: &str) -> (Submenu, QuestionItems) {
+        let menu = Submenu::new("Daily question", true);
+        let items: QuestionItems = question::PRESETS
+            .into_iter()
+            .map(|(time, label)| (time, CheckMenuItem::new(label, true, time == checked, None)))
+            .collect();
+        for (_, item) in &items {
+            menu.append(item).expect("append a check item");
+        }
+        (menu, items)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn id_of(items: &QuestionItems, time: &str) -> MenuId {
+        items
+            .iter()
+            .find(|(candidate, _)| *candidate == time)
+            .map(|(_, item)| item.id().clone())
+            .expect("a preset time")
+    }
+
+    /// What muda does to the clicked item before it hands the event over.
+    #[cfg(not(target_os = "macos"))]
+    fn muda_toggles(items: &QuestionItems, time: &str, checked: bool) {
+        items
+            .iter()
+            .find(|(candidate, _)| *candidate == time)
+            .map(|(_, item)| item.set_checked(checked))
+            .expect("a preset time");
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn ticked(items: &QuestionItems) -> Vec<&'static str> {
+        items
+            .iter()
+            .filter(|(_, item)| item.is_checked())
+            .map(|(time, _)| *time)
+            .collect()
+    }
+
+    /// Moving 6am to 5am: muda has ticked 5am itself before handing the event over,
+    /// so stepping over it still leaves the group right — 6am is the one to untick.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn a_changed_pick_is_corrected_without_touching_the_clicked_item() {
+        let (_menu, items) = question_items("06:00");
+        let clicked = id_of(&items, "05:00");
+        muda_toggles(&items, "05:00", true);
+
+        check_only_time(&items, "05:00", Some(&clicked));
+
+        assert_eq!(ticked(&items), ["05:00"]);
+    }
+
+    /// Re-picking the time already set is the case the skip gives up on: muda has
+    /// unticked it and the handler cannot put it back, because that item is the one
+    /// still borrowed — writing to it would abort the process. It stays unticked
+    /// until the deferred pass runs with the menu closed and nothing borrowed.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn a_repick_is_left_to_the_deferred_pass() {
+        let (_menu, items) = question_items("06:00");
+        let clicked = id_of(&items, "06:00");
+        muda_toggles(&items, "06:00", false);
+
+        check_only_time(&items, "06:00", Some(&clicked));
+        assert!(ticked(&items).is_empty(), "the clicked item was written to");
+
+        check_only_time(&items, "06:00", None);
+        assert_eq!(ticked(&items), ["06:00"]);
     }
 
     #[test]
