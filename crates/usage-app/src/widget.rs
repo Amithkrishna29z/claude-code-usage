@@ -9,7 +9,7 @@ use eframe::egui::{self, Color32, Sense, Stroke, Vec2, ViewportCommand};
 use usage_core::{AppConfig, ConfigService, UsageSnapshot, UsageState, WidgetStyle};
 
 use crate::monitor::UsageMonitor;
-use crate::question::DailyQuestion;
+use crate::question::{self, DailyQuestion};
 use crate::styles;
 use crate::tray::{Tray, TrayCommand};
 use crate::visuals;
@@ -312,11 +312,11 @@ impl eframe::App for WidgetApp {
             self.set_question_time(&time);
         }
 
-        // Cheap enough to run every frame: a clock comparison, and at most one spawn
-        // a day. It runs whether the card is shown or parked, which is the point —
-        // the question should arrive with the widget hidden too.
-        if let Some(day) = self.question.tick(&self.config) {
-            self.config.daily_question_last_asked = day.to_string();
+        // Cheap enough to run every frame: two clock comparisons and a read of the
+        // snapshot already in hand. It runs whether the card is shown or parked,
+        // which is the point — the question should arrive with the widget hidden too.
+        if let Some(asked_at) = self.question.tick(&self.config, &self.snapshot) {
+            question::record(&mut self.config, asked_at);
             self.persist();
         }
 

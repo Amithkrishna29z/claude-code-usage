@@ -287,9 +287,18 @@ pub struct AppConfig {
     pub daily_question_time: String,
 
     /// The local date, `YYYY-MM-DD`, the last question was asked on. Empty means
-    /// never. This is what keeps it to one question per calendar day across a
-    /// restart, so it is written by the app rather than set by hand.
+    /// never. This is what keeps the day's first question to one per calendar day
+    /// across a restart, so it is written by the app rather than set by hand.
     pub daily_question_last_asked: String,
+
+    /// The local timestamp, `YYYY-MM-DD HH:MM:SS`, the last question was asked at.
+    /// Empty means never. This is what paces the repeats that follow the day's first
+    /// question, and like the date above it is written by the app, not set by hand.
+    ///
+    /// It is kept alongside the date rather than replacing it because the two answer
+    /// different questions: the date says whether today has had its first question,
+    /// this says how long ago the last one of any kind was.
+    pub daily_question_last_asked_at: String,
 }
 
 impl Default for AppConfig {
@@ -306,6 +315,7 @@ impl Default for AppConfig {
             style: WidgetStyle::default(),
             daily_question_time: DEFAULT_QUESTION_TIME.to_owned(),
             daily_question_last_asked: String::new(),
+            daily_question_last_asked_at: String::new(),
         }
     }
 }

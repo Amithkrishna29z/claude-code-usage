@@ -469,12 +469,14 @@ fn daily_question_settings_round_trip_through_config() {
     let mut config = service.load();
     config.daily_question_time = "21:30".into();
     config.daily_question_last_asked = "2026-11-09".into();
+    config.daily_question_last_asked_at = "2026-11-09 21:30:00".into();
 
     service.save(&config).expect("saved");
     let loaded = service.load();
 
     assert_eq!(loaded.daily_question_time, "21:30");
     assert_eq!(loaded.daily_question_last_asked, "2026-11-09");
+    assert_eq!(loaded.daily_question_last_asked_at, "2026-11-09 21:30:00");
 }
 
 #[test]
@@ -495,6 +497,9 @@ fn unknown_and_missing_keys_do_not_break_loading() {
     assert!(loaded.use_official_usage); // defaulted, not lost
     assert_eq!(loaded.daily_question_time, DEFAULT_QUESTION_TIME);
     assert_eq!(loaded.daily_question_last_asked, "");
+    // A config written before the repeats existed carries no timestamp, and must
+    // load rather than fail.
+    assert_eq!(loaded.daily_question_last_asked_at, "");
 }
 
 #[test]

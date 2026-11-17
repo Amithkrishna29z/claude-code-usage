@@ -47,15 +47,22 @@ local Claude Code session logs.
 - **Menu**: Show/hide widget, Refresh now, **Style** (the five faces above, ticked),
   **Daily question** (the time it arrives, ticked), Reload settings, Quit.
 
-**A question each morning**
+**A question each morning, then one every 5h05m you are idle**
 
 - Once a day, at **6:00 AM** local by default, the app asks your installed `claude`
   CLI for one thought-provoking question and shows it as a desktop notification.
 - Pick the time — or turn it off — from the tray's **Daily question** submenu. The
   choice is remembered between runs.
-- One question per local calendar day, counted by the date rather than by a timer:
-  close the app overnight, or leave the laptop asleep past the time, and the day's
-  question arrives once the app is next running. It never arrives twice in a day.
+- The day's first question arrives whatever you are doing, counted by the date rather
+  than by a timer: close the app overnight, or leave the laptop asleep past the time,
+  and it arrives once the app is next running. It never arrives twice in a day.
+- After it, another question every **5 hours 5 minutes** — but **only while the
+  session ring reads 0%**. The interval is the 5-hour session window plus five
+  minutes of margin, so the window a question opens has closed again by the time the
+  next one is considered.
+- Any usage in the session window holds the repeats back rather than cancelling them:
+  while you are actually working with Claude Code the questions stand down, and the
+  next one arrives once the window has drained.
 
 ---
 
@@ -338,7 +345,8 @@ Settings are a JSON file, edited by hand. Its location follows platform conventi
   "widget_visible": true,
   "style": "rings",
   "daily_question_time": "06:00",
-  "daily_question_last_asked": ""
+  "daily_question_last_asked": "",
+  "daily_question_last_asked_at": ""
 }
 ```
 
@@ -353,7 +361,8 @@ Settings are a JSON file, edited by hand. Its location follows platform conventi
 | `widget_visible` | Whether the widget was showing at exit. | `true` |
 | `style` | The widget's face: `rings`, `bars`, `pill`, `minimal`, `text`. Usually set from the tray's Style submenu. An unrecognised name falls back to `rings` without invalidating the rest of the file. | `"rings"` |
 | `daily_question_time` | Local time of day for the daily question, `HH:MM` on a 24-hour clock. Empty turns it off. The tray submenu offers a few times; any minute works here. Anything unreadable is treated as `06:00`. | `"06:00"` |
-| `daily_question_last_asked` | The local date the last question was asked on. Managed by the app — this is what keeps it to one a day across restarts. | `""` |
+| `daily_question_last_asked` | The local date the last question was asked on. Managed by the app — this is what keeps the day's first question to one a day across restarts. | `""` |
+| `daily_question_last_asked_at` | The local timestamp, `YYYY-MM-DD HH:MM:SS`, the last question was asked at. Managed by the app — this is what paces the 5h05m repeats across restarts. | `""` |
 
 Unknown keys are ignored and missing keys fall back to defaults, so the file survives
 version changes in both directions. After editing, pick **Reload settings** from the
@@ -376,7 +385,24 @@ If the CLI fails — offline, signed out, not installed — it is logged to stde
 retried about ten minutes later, so one bad moment at 6am does not cost the day.
 
 Picking a time from the submenu only affects days that have not been asked yet;
-moving it earlier never re-fires a question you have already had today.
+moving it earlier never re-fires a question you have already had today. Turning it
+**Off** stops the repeats as well as the morning one.
+
+After the day's first question, the app keeps asking every **5 hours 5 minutes**, on a
+clock measured from the last question rather than from the configured time — so a
+6:00 AM start walks through 11:05, 16:10, 21:15 and on across midnight. Each repeat is
+gated on the session ring reading **0%**: if any of the 5-hour window is spent, the
+question waits, and goes out on the first check after the window drains. That gate is
+only on the repeats — the day's first question arrives regardless, since it is the one
+you set a time for by name.
+
+The effect is that the questions fill your idle stretches and get out of the way while
+you work. Asking costs a little of the allowance itself, which is what the five extra
+minutes cover: a question opens a 5-hour window, and 5h05m later that window has
+closed, so the next one is due.
+
+Upgrading from a version without the repeats, the first day carries no recorded
+timestamp to count from, so repeats begin after the next day's first question.
 
 > **Windows:** notifications are posted under the Windows PowerShell app identity,
 > which is what a desktop program without an installer gets. They arrive in the
