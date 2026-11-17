@@ -623,3 +623,56 @@ fn blend(pixels: &mut [u8], x: u32, y: u32, color: [u8; 3], alpha: f32) {
     }
     pixels[idx + 3] = (out_alpha * 255.0) as u8;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use usage_core::{UsageSource, UsageWindow};
+
+    fn pixel(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
+        let index = ((y * SIZE + x) * 4) as usize;
+        [
+            pixels[index],
+            pixels[index + 1],
+            pixels[index + 2],
+            pixels[index + 3],
+        ]
+    }
+
+    #[test]
+    fn icon_pixels_have_the_expected_dimensions_and_unknown_center_color() {
+        let snapshot = UsageSnapshot::empty(UsageState::NoData, 0, chrono::Utc::now());
+        let pixels = render_pixels(&snapshot);
+
+        assert_eq!(pixels.len(), (SIZE * SIZE * 4) as usize);
+        assert_eq!(pixel(&pixels, SIZE / 2, SIZE / 2), [0x88, 0x88, 0x88, 0xFF]);
+    }
+
+    #[test]
+    fn icon_pixels_show_both_official_window_colors() {
+        let mut snapshot = UsageSnapshot::empty(UsageState::NoData, 0, chrono::Utc::now());
+        snapshot.state = UsageState::Ok;
+        snapshot.source = UsageSource::Official;
+        snapshot.session = Some(UsageWindow::new(1.0, None));
+        snapshot.weekly = Some(UsageWindow::new(0.5, None));
+
+        let pixels = render_pixels(&snapshot);
+        assert!(pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel == [0xE0, 0x40, 0x40, 0xFF]));
+        assert!(pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel[..3] == [0x33, 0xC0, 0x59]));
+    }
+
+    #[test]
+    fn blend_ignores_zero_alpha_and_clamps_full_alpha() {
+        let mut pixels = vec![0; 4];
+
+        blend(&mut pixels, 0, 0, [1, 2, 3], 0.0);
+        assert_eq!(pixels, [0, 0, 0, 0]);
+
+        blend(&mut pixels, 0, 0, [1, 2, 3], 2.0);
+        assert_eq!(pixels, [1, 2, 3, 255]);
+    }
+}

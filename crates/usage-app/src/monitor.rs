@@ -273,3 +273,151 @@ fn official_usage(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+    use usage_core::UsageWindow;
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "ccu-monitor-{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock after epoch")
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&path).expect("temporary directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn config(claude_dir: &Path) -> AppConfig {
+        AppConfig {
+            claude_dir: claude_dir.display().to_string(),
+            ..AppConfig::default()
+        }
+    }
+
+    fn write_usage_event(claude_dir: &Path, tokens: i64) {
+        let project = claude_dir.join("projects").join("project");
+        std::fs::create_dir_all(&project).expect("projects directory");
+        let timestamp = Utc::now().to_rfc3339();
+        let line = format!(
+            r#"{{"type":"assistant","timestamp":"{timestamp}","message":{{"id":"event","usage":{{"input_tokens":{tokens}}}}}}}"#
+        );
+        std::fs::write(project.join("session.jsonl"), line).expect("usage log");
+    }
+
+    fn official(session: Option<UsageWindow>, weekly: Option<UsageWindow>) -> OfficialUsage {
+        OfficialUsage { session, weekly }
+    }
+
+    #[test]
+    fn jsonl_filter_accepts_only_jsonl_paths() {
+        assert!(is_jsonl(Path::new("session.jsonl")));
+        assert!(!is_jsonl(Path::new("session.JSONL")));
+        assert!(!is_jsonl(Path::new("session.json")));
+        assert!(!is_jsonl(Path::new("session")));
+    }
+
+    #[test]
+    fn compute_uses_local_logs_when_official_usage_is_disabled() {
+        let temp = TempDir::new("local");
+        write_usage_event(temp.path(), 123);
+        let mut config = config(temp.path());
+        config.use_official_usage = false;
+        config.token_limit = 1_000;
+        let mut client = OAuthUsageClient::new("http://127.0.0.1:9/never");
+        let mut cache = None;
+        let mut last_activity = None;
+
+        let snapshot = compute(&config, &mut client, &mut cache, &mut last_activity, false);
+
+        assert_eq!(snapshot.state, UsageState::Ok);
+        assert_eq!(snapshot.source, UsageSource::LocalLogs);
+        assert_eq!(snapshot.tokens_used, 123);
+        assert_eq!(snapshot.weekly, None);
+        assert_eq!(last_activity, snapshot.last_activity);
+    }
+
+    #[test]
+    fn compute_overlays_a_fresh_official_cache_on_local_freshness_data() {
+        let temp = TempDir::new("official");
+        write_usage_event(temp.path(), 123);
+        let config = config(temp.path());
+        let session = UsageWindow::new(0.25, None);
+        let weekly = UsageWindow::new(0.5, None);
+        let mut client = OAuthUsageClient::new("http://127.0.0.1:9/never");
+        let mut cache = Some((official(Some(session), Some(weekly)), Utc::now()));
+        let mut last_activity = None;
+
+        let snapshot = compute(&config, &mut client, &mut cache, &mut last_activity, false);
+
+        assert_eq!(snapshot.state, UsageState::Ok);
+        assert_eq!(snapshot.source, UsageSource::Official);
+        assert_eq!(snapshot.session, Some(session));
+        assert_eq!(snapshot.weekly, Some(weekly));
+        assert_eq!(snapshot.tokens_used, 123);
+        assert!(snapshot.last_activity.is_some());
+    }
+
+    #[test]
+    fn a_recent_cache_survives_a_failed_refetch() {
+        let temp = TempDir::new("recent-cache");
+        let config = config(temp.path());
+        let now = Utc::now();
+        let cached = official(Some(UsageWindow::new(0.25, None)), None);
+        let mut cache = Some((cached.clone(), now - Duration::seconds(61)));
+        let mut client = OAuthUsageClient::new("http://127.0.0.1:9/never");
+
+        let result = official_usage(
+            &config,
+            &mut client,
+            &mut cache,
+            now,
+            Duration::seconds(MIN_FETCH_INTERVAL),
+        );
+
+        assert_eq!(result, Some(cached));
+        assert!(cache.is_some());
+    }
+
+    #[test]
+    fn an_expired_cache_is_cleared_after_a_failed_refetch() {
+        let temp = TempDir::new("expired-cache");
+        let config = config(temp.path());
+        let now = Utc::now();
+        let mut cache = Some((
+            official(Some(UsageWindow::new(0.25, None)), None),
+            now - Duration::seconds(CACHE_TTL + 1),
+        ));
+        let mut client = OAuthUsageClient::new("http://127.0.0.1:9/never");
+
+        let result = official_usage(
+            &config,
+            &mut client,
+            &mut cache,
+            now,
+            Duration::seconds(MIN_FETCH_INTERVAL),
+        );
+
+        assert_eq!(result, None);
+        assert_eq!(cache, None);
+    }
+}

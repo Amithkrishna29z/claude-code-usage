@@ -156,7 +156,15 @@ fn ask_claude() -> Result<String, String> {
         ));
     }
 
-    let question = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    question_from_stdout(&output.stdout)
+}
+
+/// Normalizes Claude's stdout into the one notification-ready question.
+///
+/// Kept separate from process execution so whitespace and empty-output handling stay
+/// deterministic to test without invoking the user's Claude CLI.
+fn question_from_stdout(stdout: &[u8]) -> Result<String, String> {
+    let question = String::from_utf8_lossy(stdout).trim().to_owned();
     if question.is_empty() {
         return Err("claude printed nothing".to_owned());
     }
@@ -292,5 +300,17 @@ mod tests {
         assert_eq!(question.tick(&config("06:00", "")), None);
         assert!(question.pending.is_none());
         assert!(question.retry_at.is_some_and(|at| at > Instant::now()));
+    }
+
+    #[test]
+    fn cli_stdout_is_trimmed_and_empty_output_is_rejected() {
+        assert_eq!(
+            question_from_stdout(b"  What would make today meaningful?  \n"),
+            Ok("What would make today meaningful?".to_owned())
+        );
+        assert_eq!(
+            question_from_stdout(b" \r\n\t "),
+            Err("claude printed nothing".to_owned())
+        );
     }
 }

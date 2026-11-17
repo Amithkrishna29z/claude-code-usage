@@ -519,3 +519,36 @@ pub fn initial_position(config: &AppConfig) -> Option<egui::Pos2> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_position_uses_saved_coordinates_only_when_visible() {
+        let mut config = AppConfig::default();
+        assert_eq!(initial_position(&config), None);
+
+        config.widget_left = Some(42.5);
+        config.widget_top = Some(84.0);
+        assert_eq!(initial_position(&config), Some(egui::pos2(42.5, 84.0)));
+
+        config.widget_visible = false;
+        assert_eq!(initial_position(&config), Some(PARKED));
+    }
+
+    #[test]
+    fn corner_buttons_hug_tall_cards_and_center_on_short_cards() {
+        let tall = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), Vec2::new(100.0, 80.0));
+        let (minimise, close) = corner_rects(tall);
+        assert_eq!(minimise.min, egui::pos2(10.0, 20.0));
+        assert_eq!(close.min, egui::pos2(96.0, 20.0));
+        assert_eq!(minimise.size(), Vec2::splat(CORNER_BUTTON));
+        assert_eq!(close.size(), Vec2::splat(CORNER_BUTTON));
+
+        let short = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), Vec2::new(100.0, 40.0));
+        let (minimise, close) = corner_rects(short);
+        assert_eq!(minimise.min, egui::pos2(10.0, 33.0));
+        assert_eq!(close.min, egui::pos2(96.0, 33.0));
+    }
+}
