@@ -13,6 +13,7 @@ use std::time::Duration as StdDuration;
 use chrono::{DateTime, Duration, Utc};
 use notify::{RecursiveMode, Watcher};
 use usage_core::models::{OfficialUsage, UsageSnapshot, UsageSource, UsageState};
+use usage_core::RememberedUsage;
 use usage_core::{calculator, oauth::OAuthUsageClient, reader, AppConfig};
 
 /// The usage endpoint rate-limits hard, and log writes can fire a refresh every
@@ -143,7 +144,13 @@ fn worker(
     on_wake: impl Fn(),
 ) {
     let mut client = OAuthUsageClient::default();
-    let mut cache: Option<(OfficialUsage, DateTime<Utc>)> = None;
+    // Start from the figures the last run ended with rather than from nothing. They
+    // age out through exactly the same path as any other cached value; seeding only
+    // decides what the first few frames have to show.
+    let mut cache: Option<(OfficialUsage, DateTime<Utc>)> = config
+        .remembered_usage
+        .as_ref()
+        .map(RememberedUsage::restore);
     let mut last_activity_seen: Option<DateTime<Utc>> = None;
 
     loop {
@@ -218,7 +225,7 @@ fn compute(
         Duration::seconds((config.refresh_seconds as i64).max(MIN_FETCH_INTERVAL))
     };
 
-    let Some(official) = official_usage(config, client, cache, now, interval) else {
+    let Some((official, fetched_at)) = official_usage(config, client, cache, now, interval) else {
         return local;
     };
     let Some(session) = official.session else {
@@ -236,36 +243,42 @@ fn compute(
         last_activity: local.last_activity,
         generated_at: now,
         events_counted: local.events_counted,
+        official_fetched_at: Some(fetched_at),
     }
 }
 
-/// Returns the official figures, re-fetching only once `interval` has passed since
-/// the last one and serving the last good value while it is still fresh enough.
+/// Returns the official figures and the moment they were fetched, re-fetching only
+/// once `interval` has passed since the last one and serving the last good value
+/// while it is still fresh enough.
+///
+/// The fetch time is returned rather than `now` so a cached figure stays honest about
+/// its age: it is what the caller remembers across a restart, and dating it to the
+/// present would let one stale reading be renewed indefinitely.
 fn official_usage(
     config: &AppConfig,
     client: &mut OAuthUsageClient,
     cache: &mut Option<(OfficialUsage, DateTime<Utc>)>,
     now: DateTime<Utc>,
     interval: Duration,
-) -> Option<OfficialUsage> {
+) -> Option<(OfficialUsage, DateTime<Utc>)> {
     let age = cache.as_ref().map(|(_, at)| now - *at);
 
-    if let (Some(age), Some((cached, _))) = (age, cache.as_ref()) {
+    if let (Some(age), Some((cached, at))) = (age, cache.as_ref()) {
         if age < interval {
-            return Some(cached.clone());
+            return Some((cached.clone(), *at));
         }
     }
 
     let claude_dir = reader::resolve_claude_dir(&config.claude_dir);
     if let Some(fetched) = client.fetch(&claude_dir, now, |warning| eprintln!("usage: {warning}")) {
         *cache = Some((fetched.clone(), now));
-        return Some(fetched);
+        return Some((fetched, now));
     }
 
     // Fetch failed. Keep showing the last good figures until they go properly stale.
     match (age, cache.as_ref()) {
-        (Some(age), Some((cached, _))) if age < Duration::seconds(CACHE_TTL) => {
-            Some(cached.clone())
+        (Some(age), Some((cached, at))) if age < Duration::seconds(CACHE_TTL) => {
+            Some((cached.clone(), *at))
         }
         _ => {
             *cache = None;
@@ -383,7 +396,8 @@ mod tests {
         let config = config(temp.path());
         let now = Utc::now();
         let cached = official(Some(UsageWindow::new(0.25, None)), None);
-        let mut cache = Some((cached.clone(), now - Duration::seconds(61)));
+        let fetched_at = now - Duration::seconds(61);
+        let mut cache = Some((cached.clone(), fetched_at));
         let mut client = OAuthUsageClient::new("http://127.0.0.1:9/never");
 
         let result = official_usage(
@@ -394,8 +408,55 @@ mod tests {
             Duration::seconds(MIN_FETCH_INTERVAL),
         );
 
-        assert_eq!(result, Some(cached));
+        // Served with its original fetch time, not redated to now — that is what
+        // stops a stale reading being renewed for ever.
+        assert_eq!(result, Some((cached, fetched_at)));
         assert!(cache.is_some());
+    }
+
+    #[test]
+    fn figures_remembered_from_a_previous_run_outlast_an_unreachable_endpoint() {
+        // The bug this guards: a cold start whose first fetch is refused used to drop
+        // straight to the local estimate, which is measured against a placeholder
+        // token budget and can read wildly higher than the real figure. Seeded from
+        // the last run's remembered figures, the widget keeps showing the true one.
+        let temp = TempDir::new("remembered");
+        write_usage_event(temp.path(), 5_000_000);
+        let config = config(temp.path());
+        let now = Utc::now();
+        let remembered = RememberedUsage {
+            session_utilization: 0.10,
+            session_resets_at: Some(now + Duration::hours(1)),
+            weekly_utilization: Some(0.24),
+            weekly_resets_at: None,
+            fetched_at: now - Duration::seconds(30),
+        };
+        let mut cache = Some(remembered.restore());
+        let mut client = OAuthUsageClient::new("http://127.0.0.1:9/never");
+        let mut last_activity = None;
+
+        let snapshot = compute(&config, &mut client, &mut cache, &mut last_activity, false);
+
+        assert_eq!(snapshot.source, UsageSource::Official);
+        assert_eq!(snapshot.session.map(|w| w.utilization), Some(0.10));
+        assert_eq!(snapshot.weekly.map(|w| w.utilization), Some(0.24));
+        assert_eq!(snapshot.official_fetched_at, Some(remembered.fetched_at));
+    }
+
+    #[test]
+    fn remembering_round_trips_through_the_cache_shape() {
+        let now = Utc::now();
+        let usage = official(
+            Some(UsageWindow::new(0.10, Some(now + Duration::hours(1)))),
+            Some(UsageWindow::new(0.24, None)),
+        );
+
+        let remembered = RememberedUsage::remember(&usage, now).expect("a session window");
+        assert_eq!(remembered.restore(), (usage, now));
+
+        // Nothing worth remembering without a session window — the same condition
+        // that stops a snapshot counting as official.
+        assert_eq!(RememberedUsage::remember(&official(None, None), now), None);
     }
 
     #[test]

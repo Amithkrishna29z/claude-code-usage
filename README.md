@@ -287,6 +287,14 @@ over. Everything else in the response is ignored.
    back off, and keeps serving the last good figures for up to 15 minutes so a single
    blip does not flip the widget over to the estimate. Five-minute resolution is ample
    for a 5-hour and a 7-day window.
+3. **The last good figures are remembered across restarts**, in
+   `remembered_usage`. A cold start has nothing cached, so its first fetch is the one
+   most likely to be refused — and a refusal used to drop the widget straight to the
+   local estimate, which can read two or three times the real figure. Starting from
+   the previous run's figures means a restart shows a slightly stale *true* number
+   rather than a confident false one, and a restart within the refresh interval costs
+   no rate-limit budget at all. They age out exactly as an in-memory cache would: the
+   remembered fetch time is kept, so a stale reading cannot be renewed by restarting.
 
 The token is only ever sent to `api.anthropic.com`. Set `use_official_usage` to
 `false` to disable all network access and use the local estimate only.
@@ -313,10 +321,17 @@ When the endpoint is unavailable, the app derives a 5-hour figure from
 This path cannot know your weekly usage, so the inner ring is absent and the `wk`
 half of the compact line is dropped while the fallback is in use.
 
-**Expect the fallback and the official figure to disagree.** The fallback counts raw
-tokens against a limit you guessed; Anthropic's number reflects your actual plan
-allowance. If the widget shows a percentage that does not match `/usage`, check for
-the `est.` caption — that means you are looking at the guess, not the real figure.
+**Expect the fallback and the official figure to disagree** — often by a lot. The
+fallback counts raw tokens against a limit you guessed; Anthropic's number reflects
+your actual plan allowance. A widget reading 26% while `/usage` says 10% is this, not
+a bug in the arithmetic. If the widget shows a percentage that does not match
+`/usage`, check for the `est.` caption — that means you are looking at the guess, not
+the real figure.
+
+Because the gap can be that wide, the app prefers a *remembered* official figure over
+a fresh estimate: the estimate is only reached once there is no real figure recent
+enough to show. If you are stuck on `est.`, the endpoint has been refusing the app for
+more than 15 minutes — stderr says which reason.
 
 The logs are read even when the official figures are available, because they supply
 the "last activity" freshness that the endpoint does not provide.
@@ -346,7 +361,8 @@ Settings are a JSON file, edited by hand. Its location follows platform conventi
   "style": "rings",
   "daily_question_time": "06:00",
   "daily_question_last_asked": "",
-  "daily_question_last_asked_at": ""
+  "daily_question_last_asked_at": "",
+  "remembered_usage": null
 }
 ```
 
@@ -363,6 +379,7 @@ Settings are a JSON file, edited by hand. Its location follows platform conventi
 | `daily_question_time` | Local time of day for the daily question, `HH:MM` on a 24-hour clock. Empty turns it off. The tray submenu offers a few times; any minute works here. Anything unreadable is treated as `06:00`. | `"06:00"` |
 | `daily_question_last_asked` | The local date the last question was asked on. Managed by the app — this is what keeps the day's first question to one a day across restarts. | `""` |
 | `daily_question_last_asked_at` | The local timestamp, `YYYY-MM-DD HH:MM:SS`, the last question was asked at. Managed by the app — this is what paces the 5h05m repeats across restarts. | `""` |
+| `remembered_usage` | The last figures the official endpoint gave, with the time they were fetched. Managed by the app — this is what lets a restart show the real number instead of the estimate. Delete it to force a fresh fetch. | `null` |
 
 Unknown keys are ignored and missing keys fall back to defaults, so the file survives
 version changes in both directions. After editing, pick **Reload settings** from the

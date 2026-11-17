@@ -99,6 +99,11 @@ pub struct UsageSnapshot {
     pub last_activity: Option<DateTime<Utc>>,
     pub generated_at: DateTime<Utc>,
     pub events_counted: usize,
+    /// When the official figures in this snapshot were fetched, as opposed to when
+    /// the snapshot was assembled. `None` when the figures are not official. Serving
+    /// a cached figure keeps the original fetch time, so remembering it across a
+    /// restart cannot make a stale reading look fresh.
+    pub official_fetched_at: Option<DateTime<Utc>>,
 }
 
 impl UsageSnapshot {
@@ -114,6 +119,7 @@ impl UsageSnapshot {
             last_activity: None,
             generated_at: now,
             events_counted: 0,
+            official_fetched_at: None,
         }
     }
 
@@ -138,6 +144,58 @@ impl UsageSnapshot {
 pub struct OfficialUsage {
     pub session: Option<UsageWindow>,
     pub weekly: Option<UsageWindow>,
+}
+
+/// The last figures the official endpoint gave, written to `config.json` so they
+/// survive a restart.
+///
+/// Without this the app starts with nothing and has to fetch before it can show a
+/// real number. The endpoint rate-limits hard, so that first fetch is exactly the one
+/// most likely to be refused — and a refusal drops the widget to the local-log
+/// estimate, which is measured against a placeholder token budget and can be wildly
+/// wrong. Remembering the last real figures means a restart shows a slightly stale
+/// true number instead of a confident false one, and spends no rate-limit budget
+/// re-asking for figures that cannot have moved.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RememberedUsage {
+    pub session_utilization: f64,
+    #[serde(default)]
+    pub session_resets_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub weekly_utilization: Option<f64>,
+    #[serde(default)]
+    pub weekly_resets_at: Option<DateTime<Utc>>,
+    /// When these figures were fetched — not when they were last written out.
+    pub fetched_at: DateTime<Utc>,
+}
+
+impl RememberedUsage {
+    /// Captures figures worth remembering. `None` when there is no session window,
+    /// which is the same condition that stops a snapshot counting as official.
+    pub fn remember(usage: &OfficialUsage, fetched_at: DateTime<Utc>) -> Option<Self> {
+        let session = usage.session?;
+        Some(Self {
+            session_utilization: session.utilization,
+            session_resets_at: session.reset_at,
+            weekly_utilization: usage.weekly.map(|w| w.utilization),
+            weekly_resets_at: usage.weekly.and_then(|w| w.reset_at),
+            fetched_at,
+        })
+    }
+
+    /// The figures and the moment they were fetched, in the shape the cache holds.
+    pub fn restore(&self) -> (OfficialUsage, DateTime<Utc>) {
+        let usage = OfficialUsage {
+            session: Some(UsageWindow::new(
+                self.session_utilization,
+                self.session_resets_at,
+            )),
+            weekly: self
+                .weekly_utilization
+                .map(|used| UsageWindow::new(used, self.weekly_resets_at)),
+        };
+        (usage, self.fetched_at)
+    }
 }
 
 /// Which face the mini widget wears. Picked from the tray's *Style* submenu and
@@ -299,6 +357,12 @@ pub struct AppConfig {
     /// different questions: the date says whether today has had its first question,
     /// this says how long ago the last one of any kind was.
     pub daily_question_last_asked_at: String,
+
+    /// The last figures the official endpoint gave. Managed by the app, not set by
+    /// hand: it is what lets a restart show a real number straight away instead of
+    /// the local estimate. See [`RememberedUsage`].
+    #[serde(default)]
+    pub remembered_usage: Option<RememberedUsage>,
 }
 
 impl Default for AppConfig {
@@ -316,6 +380,7 @@ impl Default for AppConfig {
             daily_question_time: DEFAULT_QUESTION_TIME.to_owned(),
             daily_question_last_asked: String::new(),
             daily_question_last_asked_at: String::new(),
+            remembered_usage: None,
         }
     }
 }

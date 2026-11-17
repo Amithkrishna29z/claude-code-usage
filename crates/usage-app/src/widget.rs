@@ -6,7 +6,9 @@
 
 use chrono::Utc;
 use eframe::egui::{self, Color32, Sense, Stroke, Vec2, ViewportCommand};
-use usage_core::{AppConfig, ConfigService, UsageSnapshot, UsageState, WidgetStyle};
+use usage_core::{
+    AppConfig, ConfigService, RememberedUsage, UsageSnapshot, UsageState, WidgetStyle,
+};
 
 use crate::monitor::UsageMonitor;
 use crate::question::{self, DailyQuestion};
@@ -112,6 +114,30 @@ impl WidgetApp {
         if let Err(err) = self.config_service.save(&self.config) {
             eprintln!("usage: could not save config: {err}");
         }
+    }
+
+    /// Writes the official figures to config.json so the next run starts from a real
+    /// number instead of the local estimate.
+    ///
+    /// Only an actual change is written. A fetch lands at most once a minute and the
+    /// figures move in whole percent, so this is a handful of writes an hour rather
+    /// than one a frame.
+    fn remember_official_usage(&mut self) {
+        let Some(fetched_at) = self.snapshot.official_fetched_at else {
+            return;
+        };
+        let official = usage_core::OfficialUsage {
+            session: self.snapshot.session,
+            weekly: self.snapshot.weekly,
+        };
+        let Some(remembered) = RememberedUsage::remember(&official, fetched_at) else {
+            return;
+        };
+        if self.config.remembered_usage.as_ref() == Some(&remembered) {
+            return;
+        }
+        self.config.remembered_usage = Some(remembered);
+        self.persist();
     }
 
     /// Re-reads config.json so hand-edits take effect without a restart. The
@@ -282,6 +308,7 @@ impl eframe::App for WidgetApp {
 
         if let Some(latest) = self.monitor.latest() {
             self.snapshot = latest;
+            self.remember_official_usage();
         }
 
         while let Some(command) = self.tray.as_ref().and_then(Tray::poll) {
