@@ -692,6 +692,12 @@ mod tests {
     /// `is_checked` reads the tick from the native menu an item belongs to: an item on
     /// its own answers from an unrelated field, and dropping the submenu would take
     /// the native menu with it.
+    ///
+    /// Everything built on this is off on macOS, where muda refuses to create a menu
+    /// item anywhere but the main thread and a test gets a thread of its own. What is
+    /// under test is the same code on every platform, and Windows — whose borrow is
+    /// the reason the skip exists at all — runs it.
+    #[cfg(not(target_os = "macos"))]
     fn question_items(checked: &str) -> (Submenu, QuestionItems) {
         let menu = Submenu::new("Daily question", true);
         let items: QuestionItems = question::PRESETS
@@ -704,6 +710,7 @@ mod tests {
         (menu, items)
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn id_of(items: &QuestionItems, time: &str) -> MenuId {
         items
             .iter()
@@ -713,6 +720,7 @@ mod tests {
     }
 
     /// What muda does to the clicked item before it hands the event over.
+    #[cfg(not(target_os = "macos"))]
     fn muda_toggles(items: &QuestionItems, time: &str, checked: bool) {
         items
             .iter()
@@ -721,6 +729,7 @@ mod tests {
             .expect("a preset time");
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn ticked(items: &QuestionItems) -> Vec<&'static str> {
         items
             .iter()
@@ -732,6 +741,7 @@ mod tests {
     /// Moving 6am to 5am: muda has ticked 5am itself before handing the event over,
     /// so stepping over it still leaves the group right — 6am is the one to untick.
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn a_changed_pick_is_corrected_without_touching_the_clicked_item() {
         let (_menu, items) = question_items("06:00");
         let clicked = id_of(&items, "05:00");
@@ -747,6 +757,7 @@ mod tests {
     /// still borrowed — writing to it would abort the process. It stays unticked
     /// until the deferred pass runs with the menu closed and nothing borrowed.
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn a_repick_is_left_to_the_deferred_pass() {
         let (_menu, items) = question_items("06:00");
         let clicked = id_of(&items, "06:00");
