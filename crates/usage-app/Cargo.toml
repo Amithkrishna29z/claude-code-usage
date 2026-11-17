@@ -16,7 +16,7 @@ notify = "8.2.0"
 # keeps model-written text out of a command line.
 notify-rust = "4.19.0"
 tray-icon = "0.24.2"
-usage-core = { version = "0.4.0", path = "../usage-core" }
+usage-core = { version = "0.5.0", path = "../usage-core" }
 
 # Checking whether a remembered window position still falls on a connected display
 # needs a platform query; eframe exposes no monitor geometry. Same crate tray-icon
