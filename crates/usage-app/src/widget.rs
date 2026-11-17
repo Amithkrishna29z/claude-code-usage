@@ -6,10 +6,12 @@
 
 use chrono::Utc;
 use eframe::egui::{self, Color32, Sense, Stroke, Vec2, ViewportCommand};
-use usage_core::{AppConfig, ConfigService, UsageSnapshot, UsageState, WidgetStyle};
+use usage_core::{
+    AppConfig, ConfigService, RememberedUsage, UsageSnapshot, UsageState, WidgetStyle,
+};
 
 use crate::monitor::UsageMonitor;
-use crate::question::DailyQuestion;
+use crate::question::{self, DailyQuestion};
 use crate::styles;
 use crate::tray::{Tray, TrayCommand};
 use crate::visuals;
@@ -112,6 +114,30 @@ impl WidgetApp {
         if let Err(err) = self.config_service.save(&self.config) {
             eprintln!("usage: could not save config: {err}");
         }
+    }
+
+    /// Writes the official figures to config.json so the next run starts from a real
+    /// number instead of the local estimate.
+    ///
+    /// Only an actual change is written. A fetch lands at most once a minute and the
+    /// figures move in whole percent, so this is a handful of writes an hour rather
+    /// than one a frame.
+    fn remember_official_usage(&mut self) {
+        let Some(fetched_at) = self.snapshot.official_fetched_at else {
+            return;
+        };
+        let official = usage_core::OfficialUsage {
+            session: self.snapshot.session,
+            weekly: self.snapshot.weekly,
+        };
+        let Some(remembered) = RememberedUsage::remember(&official, fetched_at) else {
+            return;
+        };
+        if self.config.remembered_usage.as_ref() == Some(&remembered) {
+            return;
+        }
+        self.config.remembered_usage = Some(remembered);
+        self.persist();
     }
 
     /// Re-reads config.json so hand-edits take effect without a restart. The
@@ -282,6 +308,7 @@ impl eframe::App for WidgetApp {
 
         if let Some(latest) = self.monitor.latest() {
             self.snapshot = latest;
+            self.remember_official_usage();
         }
 
         while let Some(command) = self.tray.as_ref().and_then(Tray::poll) {
@@ -312,11 +339,11 @@ impl eframe::App for WidgetApp {
             self.set_question_time(&time);
         }
 
-        // Cheap enough to run every frame: a clock comparison, and at most one spawn
-        // a day. It runs whether the card is shown or parked, which is the point —
-        // the question should arrive with the widget hidden too.
-        if let Some(day) = self.question.tick(&self.config) {
-            self.config.daily_question_last_asked = day.to_string();
+        // Cheap enough to run every frame: two clock comparisons and a read of the
+        // snapshot already in hand. It runs whether the card is shown or parked,
+        // which is the point — the question should arrive with the widget hidden too.
+        if let Some(asked_at) = self.question.tick(&self.config, &self.snapshot) {
+            question::record(&mut self.config, asked_at);
             self.persist();
         }
 
@@ -517,5 +544,38 @@ pub fn initial_position(config: &AppConfig) -> Option<egui::Pos2> {
     match (config.widget_left, config.widget_top) {
         (Some(x), Some(y)) => Some(egui::pos2(x, y)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_position_uses_saved_coordinates_only_when_visible() {
+        let mut config = AppConfig::default();
+        assert_eq!(initial_position(&config), None);
+
+        config.widget_left = Some(42.5);
+        config.widget_top = Some(84.0);
+        assert_eq!(initial_position(&config), Some(egui::pos2(42.5, 84.0)));
+
+        config.widget_visible = false;
+        assert_eq!(initial_position(&config), Some(PARKED));
+    }
+
+    #[test]
+    fn corner_buttons_hug_tall_cards_and_center_on_short_cards() {
+        let tall = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), Vec2::new(100.0, 80.0));
+        let (minimise, close) = corner_rects(tall);
+        assert_eq!(minimise.min, egui::pos2(10.0, 20.0));
+        assert_eq!(close.min, egui::pos2(96.0, 20.0));
+        assert_eq!(minimise.size(), Vec2::splat(CORNER_BUTTON));
+        assert_eq!(close.size(), Vec2::splat(CORNER_BUTTON));
+
+        let short = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), Vec2::new(100.0, 40.0));
+        let (minimise, close) = corner_rects(short);
+        assert_eq!(minimise.min, egui::pos2(10.0, 33.0));
+        assert_eq!(close.min, egui::pos2(96.0, 33.0));
     }
 }

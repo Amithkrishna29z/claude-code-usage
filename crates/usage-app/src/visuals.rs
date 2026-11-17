@@ -207,6 +207,19 @@ fn state_caption_verbose(s: &UsageSnapshot) -> &'static str {
 mod tests {
     use super::*;
 
+    fn at(text: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(text)
+            .expect("valid timestamp")
+            .with_timezone(&Utc)
+    }
+
+    fn snapshot(state: UsageState, source: UsageSource) -> UsageSnapshot {
+        let now = at("2026-11-09T06:00:00Z");
+        let mut snapshot = UsageSnapshot::empty(state, 20_000, now);
+        snapshot.source = source;
+        snapshot
+    }
+
     #[test]
     fn duration_shows_seconds_under_an_hour_so_it_visibly_ticks() {
         assert_eq!(format_duration(Some(Duration::seconds(45))), "45s");
@@ -243,5 +256,94 @@ mod tests {
         assert_eq!(color_for(at(0.90)), RED);
         assert_eq!(color_for(at(1.50)), RED);
         assert_eq!(color_for(None), GREY);
+    }
+
+    #[test]
+    fn percent_reset_and_relative_formats_cover_display_boundaries() {
+        let now = at("2026-11-09T06:00:00Z");
+
+        assert_eq!(format_percent(None), "—");
+        assert_eq!(format_percent(Some(UsageWindow::new(0.425, None))), "43%");
+        assert_eq!(format_reset(None, now), "—");
+        assert_eq!(format_reset(Some(now - Duration::seconds(1)), now), "in 0s");
+        assert_eq!(
+            format_reset(Some(now + Duration::minutes(94)), now),
+            "in 1h 34m"
+        );
+        assert!(!format_reset(Some(now + Duration::days(1)), now).starts_with("in "));
+
+        assert_eq!(format_relative(None, now), "never");
+        assert_eq!(
+            format_relative(Some(now + Duration::seconds(1)), now),
+            "0s ago"
+        );
+        assert_eq!(
+            format_relative(Some(now - Duration::seconds(59)), now),
+            "59s ago"
+        );
+        assert_eq!(
+            format_relative(Some(now - Duration::minutes(59)), now),
+            "59m ago"
+        );
+        assert_eq!(
+            format_relative(Some(now - Duration::hours(23)), now),
+            "23h ago"
+        );
+        assert_eq!(
+            format_relative(Some(now - Duration::days(2)), now),
+            "2d ago"
+        );
+    }
+
+    #[test]
+    fn official_and_local_snapshots_have_distinct_tooltip_and_caption_contracts() {
+        let now = at("2026-11-09T06:00:00Z");
+        let mut official = snapshot(UsageState::Ok, UsageSource::Official);
+        official.session = Some(UsageWindow::new(0.42, Some(now + Duration::hours(1))));
+        official.weekly = Some(UsageWindow::new(0.48, Some(now + Duration::days(2))));
+        official.last_activity = Some(now - Duration::minutes(2));
+
+        assert_eq!(state_caption(&official), "");
+        assert_eq!(session_color(&official), GREEN);
+        let official_detail = detail_text(&official, now);
+        assert!(official_detail.contains("Session  42%   resets in 1h 0m"));
+        assert!(official_detail.contains("Weekly   48%   resets "));
+        assert!(official_detail.contains("Official figures from Anthropic"));
+        assert!(official_detail.contains("Last activity 2m ago"));
+
+        let mut local = snapshot(UsageState::Ok, UsageSource::LocalLogs);
+        local.session = Some(UsageWindow::new(0.75, Some(now + Duration::minutes(30))));
+        local.tokens_used = 8_300;
+
+        assert_eq!(state_caption(&local), "est.");
+        assert_eq!(session_color(&local), ORANGE);
+        let local_detail = detail_text(&local, now);
+        assert!(local_detail.contains("Session  75%   resets in 30m 0s"));
+        assert!(!local_detail.contains("Weekly"));
+        assert!(local_detail.contains("Local estimate — 8.3k of 20k tokens"));
+    }
+
+    #[test]
+    fn inactive_states_are_grey_and_explain_their_reason() {
+        let now = at("2026-11-09T06:00:00Z");
+        let cases = [
+            (
+                UsageState::NoActiveSession,
+                "no session",
+                "no active session",
+            ),
+            (UsageState::NoData, "no data", "no data yet"),
+            (UsageState::NoLogsFound, "no logs", "no .claude logs found"),
+        ];
+
+        for (state, caption, detail) in cases {
+            let snapshot = snapshot(state, UsageSource::LocalLogs);
+            assert_eq!(state_caption(&snapshot), caption);
+            assert_eq!(session_color(&snapshot), GREY);
+            assert_eq!(
+                detail_text(&snapshot, now),
+                format!("Claude Code Usage — {detail}")
+            );
+        }
     }
 }

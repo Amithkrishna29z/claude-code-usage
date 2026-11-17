@@ -47,15 +47,22 @@ local Claude Code session logs.
 - **Menu**: Show/hide widget, Refresh now, **Style** (the five faces above, ticked),
   **Daily question** (the time it arrives, ticked), Reload settings, Quit.
 
-**A question each morning**
+**A question each morning, then one every 5h05m you are idle**
 
 - Once a day, at **6:00 AM** local by default, the app asks your installed `claude`
   CLI for one thought-provoking question and shows it as a desktop notification.
 - Pick the time — or turn it off — from the tray's **Daily question** submenu. The
   choice is remembered between runs.
-- One question per local calendar day, counted by the date rather than by a timer:
-  close the app overnight, or leave the laptop asleep past the time, and the day's
-  question arrives once the app is next running. It never arrives twice in a day.
+- The day's first question arrives whatever you are doing, counted by the date rather
+  than by a timer: close the app overnight, or leave the laptop asleep past the time,
+  and it arrives once the app is next running. It never arrives twice in a day.
+- After it, another question every **5 hours 5 minutes** — but **only while the
+  session ring reads 0%**. The interval is the 5-hour session window plus five
+  minutes of margin, so the window a question opens has closed again by the time the
+  next one is considered.
+- Any usage in the session window holds the repeats back rather than cancelling them:
+  while you are actually working with Claude Code the questions stand down, and the
+  next one arrives once the window has drained.
 
 ---
 
@@ -280,6 +287,14 @@ over. Everything else in the response is ignored.
    back off, and keeps serving the last good figures for up to 15 minutes so a single
    blip does not flip the widget over to the estimate. Five-minute resolution is ample
    for a 5-hour and a 7-day window.
+3. **The last good figures are remembered across restarts**, in
+   `remembered_usage`. A cold start has nothing cached, so its first fetch is the one
+   most likely to be refused — and a refusal used to drop the widget straight to the
+   local estimate, which can read two or three times the real figure. Starting from
+   the previous run's figures means a restart shows a slightly stale *true* number
+   rather than a confident false one, and a restart within the refresh interval costs
+   no rate-limit budget at all. They age out exactly as an in-memory cache would: the
+   remembered fetch time is kept, so a stale reading cannot be renewed by restarting.
 
 The token is only ever sent to `api.anthropic.com`. Set `use_official_usage` to
 `false` to disable all network access and use the local estimate only.
@@ -306,10 +321,17 @@ When the endpoint is unavailable, the app derives a 5-hour figure from
 This path cannot know your weekly usage, so the inner ring is absent and the `wk`
 half of the compact line is dropped while the fallback is in use.
 
-**Expect the fallback and the official figure to disagree.** The fallback counts raw
-tokens against a limit you guessed; Anthropic's number reflects your actual plan
-allowance. If the widget shows a percentage that does not match `/usage`, check for
-the `est.` caption — that means you are looking at the guess, not the real figure.
+**Expect the fallback and the official figure to disagree** — often by a lot. The
+fallback counts raw tokens against a limit you guessed; Anthropic's number reflects
+your actual plan allowance. A widget reading 26% while `/usage` says 10% is this, not
+a bug in the arithmetic. If the widget shows a percentage that does not match
+`/usage`, check for the `est.` caption — that means you are looking at the guess, not
+the real figure.
+
+Because the gap can be that wide, the app prefers a *remembered* official figure over
+a fresh estimate: the estimate is only reached once there is no real figure recent
+enough to show. If you are stuck on `est.`, the endpoint has been refusing the app for
+more than 15 minutes — stderr says which reason.
 
 The logs are read even when the official figures are available, because they supply
 the "last activity" freshness that the endpoint does not provide.
@@ -338,7 +360,9 @@ Settings are a JSON file, edited by hand. Its location follows platform conventi
   "widget_visible": true,
   "style": "rings",
   "daily_question_time": "06:00",
-  "daily_question_last_asked": ""
+  "daily_question_last_asked": "",
+  "daily_question_last_asked_at": "",
+  "remembered_usage": null
 }
 ```
 
@@ -353,7 +377,9 @@ Settings are a JSON file, edited by hand. Its location follows platform conventi
 | `widget_visible` | Whether the widget was showing at exit. | `true` |
 | `style` | The widget's face: `rings`, `bars`, `pill`, `minimal`, `text`. Usually set from the tray's Style submenu. An unrecognised name falls back to `rings` without invalidating the rest of the file. | `"rings"` |
 | `daily_question_time` | Local time of day for the daily question, `HH:MM` on a 24-hour clock. Empty turns it off. The tray submenu offers a few times; any minute works here. Anything unreadable is treated as `06:00`. | `"06:00"` |
-| `daily_question_last_asked` | The local date the last question was asked on. Managed by the app — this is what keeps it to one a day across restarts. | `""` |
+| `daily_question_last_asked` | The local date the last question was asked on. Managed by the app — this is what keeps the day's first question to one a day across restarts. | `""` |
+| `daily_question_last_asked_at` | The local timestamp, `YYYY-MM-DD HH:MM:SS`, the last question was asked at. Managed by the app — this is what paces the 5h05m repeats across restarts. | `""` |
+| `remembered_usage` | The last figures the official endpoint gave, with the time they were fetched. Managed by the app — this is what lets a restart show the real number instead of the estimate. Delete it to force a fresh fetch. | `null` |
 
 Unknown keys are ignored and missing keys fall back to defaults, so the file survives
 version changes in both directions. After editing, pick **Reload settings** from the
@@ -376,7 +402,24 @@ If the CLI fails — offline, signed out, not installed — it is logged to stde
 retried about ten minutes later, so one bad moment at 6am does not cost the day.
 
 Picking a time from the submenu only affects days that have not been asked yet;
-moving it earlier never re-fires a question you have already had today.
+moving it earlier never re-fires a question you have already had today. Turning it
+**Off** stops the repeats as well as the morning one.
+
+After the day's first question, the app keeps asking every **5 hours 5 minutes**, on a
+clock measured from the last question rather than from the configured time — so a
+6:00 AM start walks through 11:05, 16:10, 21:15 and on across midnight. Each repeat is
+gated on the session ring reading **0%**: if any of the 5-hour window is spent, the
+question waits, and goes out on the first check after the window drains. That gate is
+only on the repeats — the day's first question arrives regardless, since it is the one
+you set a time for by name.
+
+The effect is that the questions fill your idle stretches and get out of the way while
+you work. Asking costs a little of the allowance itself, which is what the five extra
+minutes cover: a question opens a 5-hour window, and 5h05m later that window has
+closed, so the next one is due.
+
+Upgrading from a version without the repeats, the first day carries no recorded
+timestamp to count from, so repeats begin after the next day's first question.
 
 > **Windows:** notifications are posted under the Windows PowerShell app identity,
 > which is what a desktop program without an installer gets. They arrive in the

@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use usage_core::models::{UsageEvent, UsageState};
 use usage_core::{
-    calculator, config::ConfigService, oauth, parser, reader, WidgetStyle, DEFAULT_QUESTION_TIME,
+    calculator, config::ConfigService, oauth, parser, reader, RememberedUsage, WidgetStyle,
+    DEFAULT_QUESTION_TIME,
 };
 
 fn utc(text: &str) -> DateTime<Utc> {
@@ -469,12 +470,38 @@ fn daily_question_settings_round_trip_through_config() {
     let mut config = service.load();
     config.daily_question_time = "21:30".into();
     config.daily_question_last_asked = "2026-11-09".into();
+    config.daily_question_last_asked_at = "2026-11-09 21:30:00".into();
 
     service.save(&config).expect("saved");
     let loaded = service.load();
 
     assert_eq!(loaded.daily_question_time, "21:30");
     assert_eq!(loaded.daily_question_last_asked, "2026-11-09");
+    assert_eq!(loaded.daily_question_last_asked_at, "2026-11-09 21:30:00");
+}
+
+#[test]
+fn remembered_official_figures_round_trip_through_config() {
+    let temp = TempDir::new("remembered-usage-roundtrip");
+    let service = ConfigService::with_dir(temp.path());
+    let mut config = service.load();
+    assert_eq!(config.remembered_usage, None);
+
+    let fetched_at = DateTime::parse_from_rfc3339("2026-11-17T09:46:20Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let remembered = RememberedUsage {
+        session_utilization: 0.10,
+        session_resets_at: Some(fetched_at + Duration::hours(1)),
+        weekly_utilization: Some(0.24),
+        weekly_resets_at: None,
+        fetched_at,
+    };
+    config.remembered_usage = Some(remembered.clone());
+
+    service.save(&config).expect("saved");
+
+    assert_eq!(service.load().remembered_usage, Some(remembered));
 }
 
 #[test]
@@ -495,6 +522,9 @@ fn unknown_and_missing_keys_do_not_break_loading() {
     assert!(loaded.use_official_usage); // defaulted, not lost
     assert_eq!(loaded.daily_question_time, DEFAULT_QUESTION_TIME);
     assert_eq!(loaded.daily_question_last_asked, "");
+    // A config written before the repeats existed carries no timestamp, and must
+    // load rather than fail.
+    assert_eq!(loaded.daily_question_last_asked_at, "");
 }
 
 #[test]

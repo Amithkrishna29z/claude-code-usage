@@ -13,7 +13,7 @@ The app also has a small independent daily-question path: the UI frame checks it
 local-time schedule, starts a background Claude CLI call when due, and delivers the
 completed text as a native notification on the UI thread.
 
-The workspace uses Rust 2021, MSRV 1.82, version `0.4.0`, and a size-oriented release
+The workspace uses Rust 2021, MSRV 1.82, version `0.5.0`, and a size-oriented release
 profile: `opt-level = "z"`, LTO, one codegen unit, and stripped binaries.
 
 ## Runtime data flow

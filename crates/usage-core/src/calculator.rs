@@ -101,5 +101,7 @@ pub fn compute(
         last_activity: Some(last_activity),
         generated_at: now,
         events_counted: block_count,
+        // This is the local estimate, not an official reading.
+        official_fetched_at: None,
     }
 }

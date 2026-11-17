@@ -448,6 +448,17 @@ fn arc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
+    use usage_core::{UsageSource, UsageWindow};
+
+    fn live_snapshot(now: DateTime<Utc>, source: UsageSource) -> UsageSnapshot {
+        let mut snapshot = UsageSnapshot::empty(UsageState::Ok, 1_000, now);
+        snapshot.source = source;
+        snapshot.session = Some(UsageWindow::new(0.25, Some(now + Duration::hours(1))));
+        snapshot.weekly = Some(UsageWindow::new(0.5, None));
+        snapshot.last_activity = Some(now);
+        snapshot
+    }
 
     #[test]
     fn documented_style_dimensions_match_the_rendering_contract() {
@@ -463,5 +474,35 @@ mod tests {
         for (style, size) in expected {
             assert_eq!(size_of(style), size, "{}", style.label());
         }
+    }
+
+    #[test]
+    fn compact_summaries_expose_usage_source_and_available_windows() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 9, 6, 0, 0).unwrap();
+        let snapshot = live_snapshot(now, UsageSource::LocalLogs);
+
+        assert!(is_live(&snapshot));
+        assert_eq!(session_percent(&snapshot), "25%");
+        assert_eq!(weekly_and_time(&snapshot, now), "wk 50%  ·  1h 0m left");
+        assert_eq!(footer_line(&snapshot, now), "est. · 1h 0m left");
+        assert_eq!(
+            flagged_summary(&snapshot, now),
+            "est. · wk 50%  ·  1h 0m left"
+        );
+    }
+
+    #[test]
+    fn captions_distinguish_stale_and_unavailable_snapshots() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 9, 6, 0, 0).unwrap();
+        let mut stale = live_snapshot(now, UsageSource::Official);
+        stale.last_activity = Some(now - Duration::minutes(11));
+
+        assert_eq!(caption(&stale, now), "stale");
+
+        let unavailable = UsageSnapshot::empty(UsageState::NoData, 1_000, now);
+        assert!(!is_live(&unavailable));
+        assert_eq!(session_percent(&unavailable), "—");
+        assert_eq!(weekly_and_time(&unavailable, now), "");
+        assert_eq!(footer_line(&unavailable, now), "no data");
     }
 }
