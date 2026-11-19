@@ -254,7 +254,12 @@ fn read_events_dedupes_same_message_id_across_files() {
     )
     .unwrap();
 
-    let result = reader::read_events(temp.path(), epoch(), &mut reader::LogCache::default(), |_| {});
+    let result = reader::read_events(
+        temp.path(),
+        epoch(),
+        &mut reader::LogCache::default(),
+        |_| {},
+    );
 
     assert!(result.logs_found);
     assert_eq!(result.events.len(), 3); // dup counted once
@@ -271,7 +276,12 @@ fn read_events_keeps_events_without_message_ids() {
     let line = r#"{"type":"assistant","timestamp":"2026-08-15T10:00:00Z","message":{"usage":{"input_tokens":100}}}"#;
     std::fs::write(project.join("session.jsonl"), format!("{line}\n{line}\n")).unwrap();
 
-    let result = reader::read_events(temp.path(), epoch(), &mut reader::LogCache::default(), |_| {});
+    let result = reader::read_events(
+        temp.path(),
+        epoch(),
+        &mut reader::LogCache::default(),
+        |_| {},
+    );
 
     assert_eq!(result.events.len(), 2);
     assert_eq!(
@@ -320,7 +330,11 @@ fn a_reused_cache_picks_up_only_what_was_appended() {
     let proj = temp.path().join("projects").join("proj");
     std::fs::create_dir_all(&proj).unwrap();
     let log = proj.join("session.jsonl");
-    std::fs::write(&log, format!("{}\n", usage_line("m1", "2026-08-15T10:00:00Z", 100))).unwrap();
+    std::fs::write(
+        &log,
+        format!("{}\n", usage_line("m1", "2026-08-15T10:00:00Z", 100)),
+    )
+    .unwrap();
 
     let mut cache = reader::LogCache::default();
     let first = reader::read_events(temp.path(), epoch(), &mut cache, |_| {});
@@ -345,7 +359,11 @@ fn a_reused_cache_picks_up_only_what_was_appended() {
 
     // Truncated and rewritten from scratch (log rotation): the old offset must not
     // be trusted, or this would seek past the end and read nothing.
-    std::fs::write(&log, format!("{}\n", usage_line("m3", "2026-08-15T10:10:00Z", 50))).unwrap();
+    std::fs::write(
+        &log,
+        format!("{}\n", usage_line("m3", "2026-08-15T10:10:00Z", 50)),
+    )
+    .unwrap();
     let third = reader::read_events(temp.path(), epoch(), &mut cache, |_| {});
     assert_eq!(third.events.len(), 1);
     assert_eq!(third.events[0].total_tokens(), 50);
