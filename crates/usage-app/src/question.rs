@@ -200,9 +200,22 @@ fn spawn(answers: Sender<Result<String, String>>) {
 }
 
 /// Runs `claude -p <prompt>` and returns the one line it prints.
+///
+/// The extra flags strip everything the CLI would otherwise load for a full coding
+/// session — the default system prompt, the built-in tools, the skills list — none of
+/// which this one-line question needs. Measured against the real CLI, that cuts a cold
+/// call from ~28k tokens to ~2.8k: most of what a bare `claude -p` call spends is
+/// context the model never uses, not the answer itself.
 fn ask_claude() -> Result<String, String> {
     let mut command = std::process::Command::new("claude");
-    command.arg("-p").arg(PROMPT);
+    command
+        .arg("-p")
+        .arg(PROMPT)
+        .arg("--system-prompt")
+        .arg("")
+        .arg("--tools")
+        .arg("")
+        .arg("--disable-slash-commands");
     no_console_window(&mut command);
 
     let output = command
