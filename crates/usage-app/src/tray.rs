@@ -190,6 +190,11 @@ pub struct Tray {
     /// re-sending an unchanged string every frame is enough shell traffic to make the
     /// app look like it has stopped responding.
     last_tooltip: Option<String>,
+    /// When the tooltip text was last rebuilt. Its countdowns only have second
+    /// resolution, so rebuilding it on every ~250ms repaint re-does that formatting
+    /// three times out of four for a string that cannot have changed; this caps it to
+    /// once a second.
+    tooltip_built_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Tray {
@@ -216,6 +221,7 @@ impl Tray {
             events,
             last_drawn: None,
             last_tooltip: None,
+            tooltip_built_at: None,
         })
     }
 
@@ -299,6 +305,7 @@ impl Tray {
             events,
             last_drawn: None,
             last_tooltip: None,
+            tooltip_built_at: None,
         })
     }
 
@@ -348,10 +355,16 @@ impl Tray {
             self.set_icon(render_pixels(snapshot));
         }
 
-        let tooltip = visuals::detail_text(snapshot, now);
-        if self.last_tooltip.as_deref() != Some(tooltip.as_str()) {
-            self.last_tooltip = Some(tooltip.clone());
-            self.set_tooltip(tooltip);
+        let due = self
+            .tooltip_built_at
+            .is_none_or(|at| now - at >= chrono::Duration::seconds(1));
+        if due {
+            self.tooltip_built_at = Some(now);
+            let tooltip = visuals::detail_text(snapshot, now);
+            if self.last_tooltip.as_deref() != Some(tooltip.as_str()) {
+                self.last_tooltip = Some(tooltip.clone());
+                self.set_tooltip(tooltip);
+            }
         }
     }
 

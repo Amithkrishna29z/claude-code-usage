@@ -152,6 +152,7 @@ fn worker(
         .as_ref()
         .map(RememberedUsage::restore);
     let mut last_activity_seen: Option<DateTime<Utc>> = None;
+    let mut log_cache = reader::LogCache::default();
 
     loop {
         let asked = match commands.recv_timeout(POLL_INTERVAL) {
@@ -170,6 +171,7 @@ fn worker(
             &mut client,
             &mut cache,
             &mut last_activity_seen,
+            &mut log_cache,
             asked,
         );
         if snapshots.send(snapshot).is_err() {
@@ -190,6 +192,7 @@ fn compute(
     client: &mut OAuthUsageClient,
     cache: &mut Option<(OfficialUsage, DateTime<Utc>)>,
     last_activity_seen: &mut Option<DateTime<Utc>>,
+    log_cache: &mut reader::LogCache,
     asked: bool,
 ) -> UsageSnapshot {
     let now = Utc::now();
@@ -198,7 +201,9 @@ fn compute(
     // Only the block covering `now` is ever reported, and it cannot start earlier
     // than one window ago, so that is as far back as the logs need reading.
     let since = now - calculator::window_span(config.window_hours);
-    let read = reader::read_events(&claude_dir, since, |warning| eprintln!("usage: {warning}"));
+    let read = reader::read_events(&claude_dir, since, log_cache, |warning| {
+        eprintln!("usage: {warning}")
+    });
     let local = calculator::compute(
         &read.events,
         config.token_limit,
@@ -360,7 +365,15 @@ mod tests {
         let mut cache = None;
         let mut last_activity = None;
 
-        let snapshot = compute(&config, &mut client, &mut cache, &mut last_activity, false);
+        let mut log_cache = reader::LogCache::default();
+        let snapshot = compute(
+            &config,
+            &mut client,
+            &mut cache,
+            &mut last_activity,
+            &mut log_cache,
+            false,
+        );
 
         assert_eq!(snapshot.state, UsageState::Ok);
         assert_eq!(snapshot.source, UsageSource::LocalLogs);
@@ -380,7 +393,15 @@ mod tests {
         let mut cache = Some((official(Some(session), Some(weekly)), Utc::now()));
         let mut last_activity = None;
 
-        let snapshot = compute(&config, &mut client, &mut cache, &mut last_activity, false);
+        let mut log_cache = reader::LogCache::default();
+        let snapshot = compute(
+            &config,
+            &mut client,
+            &mut cache,
+            &mut last_activity,
+            &mut log_cache,
+            false,
+        );
 
         assert_eq!(snapshot.state, UsageState::Ok);
         assert_eq!(snapshot.source, UsageSource::Official);
@@ -435,7 +456,15 @@ mod tests {
         let mut client = OAuthUsageClient::new("http://127.0.0.1:9/never");
         let mut last_activity = None;
 
-        let snapshot = compute(&config, &mut client, &mut cache, &mut last_activity, false);
+        let mut log_cache = reader::LogCache::default();
+        let snapshot = compute(
+            &config,
+            &mut client,
+            &mut cache,
+            &mut last_activity,
+            &mut log_cache,
+            false,
+        );
 
         assert_eq!(snapshot.source, UsageSource::Official);
         assert_eq!(snapshot.session.map(|w| w.utilization), Some(0.10));

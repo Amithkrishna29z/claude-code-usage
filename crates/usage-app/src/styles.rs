@@ -432,16 +432,19 @@ fn arc(
         })
         .collect();
 
-    painter.add(egui::Shape::line(points.clone(), Stroke::new(width, color)));
+    // Taken before the move below, which otherwise would need the whole points Vec
+    // cloned just to still have an end to look at — at up to 180 points, on every
+    // repaint, for the full time a ring face stays visible.
+    let ends = (fraction < 1.0).then(|| (points.first().copied(), points.last().copied()));
+
+    painter.add(egui::Shape::line(points, Stroke::new(width, color)));
 
     // egui strokes polylines with butt ends; discs at the tips give the round caps
     // the design calls for. Skipped on a full circle, where the ends meet anyway.
-    if fraction < 1.0 {
+    if let Some((Some(first), Some(last))) = ends {
         let cap = width / 2.0;
-        if let (Some(first), Some(last)) = (points.first(), points.last()) {
-            painter.circle_filled(*first, cap, color);
-            painter.circle_filled(*last, cap, color);
-        }
+        painter.circle_filled(first, cap, color);
+        painter.circle_filled(last, cap, color);
     }
 }
 
