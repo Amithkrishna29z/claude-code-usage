@@ -47,6 +47,13 @@ pub const PRESETS: [(&str, &str); 9] = [
 /// minutes rather than the whole day.
 const RETRY_AFTER: Duration = Duration::from_secs(600);
 
+/// How long the CLI is allowed to think before the attempt is given up on. Without a
+/// limit, a hang here — a stuck login prompt, a stalled connection — would block this
+/// thread forever: [`DailyQuestion::pending`] only clears once a result comes back, so
+/// a hung call would wedge the feature for the rest of the process's life rather than
+/// costing one missed question.
+const CLI_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// How long after one question the next is due: the 5-hour session window, plus five
 /// minutes so the window a question opens has definitely closed before the next is
 /// considered.
@@ -215,23 +222,71 @@ fn ask_claude() -> Result<String, String> {
         .arg("")
         .arg("--tools")
         .arg("")
-        .arg("--disable-slash-commands");
+        .arg("--disable-slash-commands")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     no_console_window(&mut command);
 
-    let output = command
-        .output()
+    let mut child = command
+        .spawn()
         .map_err(|err| format!("could not run the claude CLI: {err}"))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    // Drained on threads of their own, so that even a chatty stderr can never fill
+    // its pipe and deadlock the wait below.
+    let stdout = read_in_background(child.stdout.take());
+    let stderr = read_in_background(child.stderr.take());
+
+    let Some(status) = wait_with_timeout(&mut child, CLI_TIMEOUT) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("claude did not answer within {CLI_TIMEOUT:?}"));
+    };
+
+    let stdout = stdout.join().unwrap_or_default();
+    if !status.success() {
+        let stderr = stderr.join().unwrap_or_default();
         return Err(format!(
-            "claude exited with {}: {}",
-            output.status,
-            stderr.trim()
+            "claude exited with {status}: {}",
+            String::from_utf8_lossy(&stderr).trim()
         ));
     }
 
-    question_from_stdout(&output.stdout)
+    question_from_stdout(&stdout)
+}
+
+/// Reads a pipe to completion on a thread of its own, so the caller can wait on the
+/// child's exit without the pipe's buffer filling up and blocking it first.
+fn read_in_background(
+    pipe: Option<impl std::io::Read + Send + 'static>,
+) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    })
+}
+
+/// Polls for the child's exit, giving up once `timeout` has passed without one. The
+/// child is left running either way — killing it is the caller's job once it knows
+/// which outcome this was.
+fn wait_with_timeout(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Option<std::process::ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Err(_) => return None,
+            Ok(None) => {}
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Normalizes Claude's stdout into the one notification-ready question.

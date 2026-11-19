@@ -214,7 +214,12 @@ fn nonpositive_window_settings_use_the_documented_five_hour_default() {
 #[test]
 fn read_events_reports_no_logs_when_projects_dir_missing() {
     let temp = TempDir::new("noproj");
-    let result = reader::read_events(&temp.path().join("does-not-exist"), epoch(), |_| {});
+    let result = reader::read_events(
+        &temp.path().join("does-not-exist"),
+        epoch(),
+        &mut reader::LogCache::default(),
+        |_| {},
+    );
 
     assert!(!result.logs_found);
     assert!(result.events.is_empty());
@@ -249,7 +254,12 @@ fn read_events_dedupes_same_message_id_across_files() {
     )
     .unwrap();
 
-    let result = reader::read_events(temp.path(), epoch(), |_| {});
+    let result = reader::read_events(
+        temp.path(),
+        epoch(),
+        &mut reader::LogCache::default(),
+        |_| {},
+    );
 
     assert!(result.logs_found);
     assert_eq!(result.events.len(), 3); // dup counted once
@@ -266,7 +276,12 @@ fn read_events_keeps_events_without_message_ids() {
     let line = r#"{"type":"assistant","timestamp":"2026-08-15T10:00:00Z","message":{"usage":{"input_tokens":100}}}"#;
     std::fs::write(project.join("session.jsonl"), format!("{line}\n{line}\n")).unwrap();
 
-    let result = reader::read_events(temp.path(), epoch(), |_| {});
+    let result = reader::read_events(
+        temp.path(),
+        epoch(),
+        &mut reader::LogCache::default(),
+        |_| {},
+    );
 
     assert_eq!(result.events.len(), 2);
     assert_eq!(
@@ -296,12 +311,62 @@ fn read_events_skips_logs_untouched_since_the_cutoff() {
 
     // The file was written just now, so a cutoff an hour ahead puts it out of range
     // the same way an old log falls behind a cutoff one window back.
-    let result = reader::read_events(temp.path(), Utc::now() + Duration::hours(1), |_| {});
+    let result = reader::read_events(
+        temp.path(),
+        Utc::now() + Duration::hours(1),
+        &mut reader::LogCache::default(),
+        |_| {},
+    );
 
     // Not parsed -- but the tree plainly has logs in it, which is a different thing
     // from having none, and the caption depends on telling them apart.
     assert!(result.logs_found);
     assert!(result.events.is_empty());
+}
+
+#[test]
+fn a_reused_cache_picks_up_only_what_was_appended() {
+    let temp = TempDir::new("incremental");
+    let proj = temp.path().join("projects").join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let log = proj.join("session.jsonl");
+    std::fs::write(
+        &log,
+        format!("{}\n", usage_line("m1", "2026-08-15T10:00:00Z", 100)),
+    )
+    .unwrap();
+
+    let mut cache = reader::LogCache::default();
+    let first = reader::read_events(temp.path(), epoch(), &mut cache, |_| {});
+    assert_eq!(first.events.len(), 1);
+
+    // Appended after the first read: a reused cache must see it without redoing the
+    // part it already parsed (asserted indirectly — the dup id would double-count if
+    // the whole file were reparsed and deduping somehow missed it).
+    std::fs::write(
+        &log,
+        format!(
+            "{}\n{}\n",
+            usage_line("m1", "2026-08-15T10:00:00Z", 100),
+            usage_line("m2", "2026-08-15T10:05:00Z", 200)
+        ),
+    )
+    .unwrap();
+    let second = reader::read_events(temp.path(), epoch(), &mut cache, |_| {});
+    assert_eq!(second.events.len(), 2);
+    let total: i64 = second.events.iter().map(|e| e.total_tokens()).sum();
+    assert_eq!(total, 300);
+
+    // Truncated and rewritten from scratch (log rotation): the old offset must not
+    // be trusted, or this would seek past the end and read nothing.
+    std::fs::write(
+        &log,
+        format!("{}\n", usage_line("m3", "2026-08-15T10:10:00Z", 50)),
+    )
+    .unwrap();
+    let third = reader::read_events(temp.path(), epoch(), &mut cache, |_| {});
+    assert_eq!(third.events.len(), 1);
+    assert_eq!(third.events[0].total_tokens(), 50);
 }
 
 #[test]
